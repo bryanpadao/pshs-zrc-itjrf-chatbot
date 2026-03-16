@@ -1,0 +1,21 @@
+Issue,Solution,Category
+Cannot connect to Wi-Fi,Check if Wi-Fi is enabled on your device. Forget the network and reconnect. If the issue persists, restart your router or contact IT.,Network
+Printer not printing,Check if the printer is online and has paper. Restart the printer and your computer. Ensure the correct printer is selected.,Hardware
+Computer running slow,Restart your computer. Close unused programs and browser tabs. Run a disk cleanup. If it persists, contact IT for hardware check.,Software
+Cannot open Microsoft Office,Try repairing the installation via Control Panel > Programs. If it still fails, contact IT for reinstallation.,Software
+Forgot Windows password,Contact IT to reset your account password. Do not attempt to bypass it yourself.,Account
+No internet access,Check your LAN/Wi-Fi connection. Restart your router. Check if other devices are also affected. Contact IT if the issue is building-wide.,Network
+Screen flickering or black screen,Check video cable connections. Update display drivers. If using a laptop, check power settings. Contact IT if issue persists.,Hardware
+Cannot log in to Google Workspace,Ensure you are using your official school email. Try clearing browser cache. Contact IT if the account is locked.,Account
+USB drive not recognized,Try a different USB port. Test the drive on another computer. If it fails on all computers, the drive may be faulty.,Hardware
+Email not sending or receiving,Check your internet connection. Verify the recipient's email address. Check spam/junk folders. Contact IT if the issue persists.,Software
+Projector not displaying,Check HDMI/VGA cable connections. Press Win+P to select display mode. Restart the projector. Contact IT if still not working.,Hardware
+Computer won't turn on,Check power cable and outlet. Try a different power socket. If still unresponsive, contact IT for hardware inspection.,Hardware
+Google Meet / Zoom audio not working,Check if microphone is muted in the app. Check system sound settings. Try a different browser. Restart the application.,Software
+Files accidentally deleted,Check the Recycle Bin first. If emptied, contact IT immediately — recovery may still be possible depending on storage type.,Data
+Antivirus showing threats,Do not dismiss the alert. Contact IT immediately. Do not open suspicious files or attachments.,Security
+Keyboard or mouse not responding,Check USB/Bluetooth connection. Try a different port. Restart your computer. Contact IT if device may need replacement.,Hardware
+Cannot access shared network drive,Ensure you are connected to the school network. Map the drive again via File Explorer. Contact IT for permission issues.,Network
+System updates failing,Do not force-stop updates. Let IT handle Windows/software updates to avoid system instability.,Software
+Browser keeps crashing,Clear browser cache and cookies. Disable extensions. Try a different browser. Reinstall if issue persists.,Software
+Webcam not working,Check if another app is using the webcam. Update webcam drivers. Restart your computer. Contact IT if unresolved.,Hardware
