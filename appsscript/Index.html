@@ -212,7 +212,7 @@
           addMessage('Sorry, something went wrong. Please try again.', 'bot');
           console.error(err);
         })
-        .doPost({ message: text, session: session });
+        .processChat({ message: text, session: session });
     }
 
     sendBtn.addEventListener('click', sendMessage);

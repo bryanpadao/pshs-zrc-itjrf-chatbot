@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PSHS ZRC IT Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #f0f2f5;
+      min-height: 100vh;
+    }
+
+    header {
+      background: #1a3c6e;
+      color: #fff;
+      padding: 16px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    header h1 { font-size: 18px; font-weight: 600; }
+    header p  { font-size: 12px; opacity: 0.75; margin-top: 2px; }
+
+    .container { padding: 24px 28px; }
+
+    .stats {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+    }
+
+    .stat-card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 16px 24px;
+      flex: 1;
+      min-width: 140px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      text-align: center;
+    }
+
+    .stat-card .count { font-size: 32px; font-weight: 700; color: #1a3c6e; }
+    .stat-card .label { font-size: 12px; color: #666; margin-top: 4px; }
+
+    .filters {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    .filter-btn {
+      padding: 7px 18px;
+      border: 2px solid #1a3c6e;
+      border-radius: 20px;
+      background: #fff;
+      color: #1a3c6e;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.15s;
+    }
+
+    .filter-btn.active,
+    .filter-btn:hover {
+      background: #1a3c6e;
+      color: #fff;
+    }
+
+    .table-wrap {
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    thead tr { background: #1a3c6e; color: #fff; }
+    thead th { padding: 12px 14px; text-align: left; white-space: nowrap; }
+
+    tbody tr { border-bottom: 1px solid #eee; transition: background 0.1s; }
+    tbody tr:hover { background: #f5f8ff; }
+    tbody tr:last-child { border-bottom: none; }
+
+    td { padding: 11px 14px; vertical-align: top; }
+
+    .td-problem {
+      max-width: 260px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .badge-pending   { background: #fff3cd; color: #856404; }
+    .badge-completed { background: #d1e7dd; color: #0a3622; }
+
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+    .btn {
+      padding: 5px 12px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+      transition: opacity 0.15s;
+    }
+
+    .btn:hover  { opacity: 0.85; }
+    .btn:active { opacity: 0.7; }
+
+    .btn-complete { background: #1a3c6e; color: #fff; }
+    .btn-pdf      { background: #e8edf5; color: #1a3c6e; }
+    .btn-disabled { background: #e0e0e0; color: #999; cursor: default; }
+
+    .loading, .empty {
+      text-align: center;
+      padding: 40px;
+      color: #888;
+      font-size: 14px;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #1a3c6e;
+      color: #fff;
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-size: 13px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      display: none;
+      z-index: 9999;
+    }
+
+    @media (max-width: 600px) {
+      .container { padding: 16px; }
+      header { padding: 12px 16px; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>PSHS ZRC IT Unit — Ticket Dashboard</h1>
+    <p>IT Job Request Form Management</p>
+  </div>
+  <button class="btn btn-pdf" onclick="loadTickets()" style="font-size:13px;padding:8px 16px;">
+    &#8635; Refresh
+  </button>
+</header>
+
+<div class="container">
+
+  <div class="stats">
+    <div class="stat-card">
+      <div class="count" id="count-all">—</div>
+      <div class="label">Total Tickets</div>
+    </div>
+    <div class="stat-card">
+      <div class="count" id="count-pending" style="color:#856404;">—</div>
+      <div class="label">Pending</div>
+    </div>
+    <div class="stat-card">
+      <div class="count" id="count-completed" style="color:#0a3622;">—</div>
+      <div class="label">Completed</div>
+    </div>
+  </div>
+
+  <div class="filters">
+    <button class="filter-btn active" onclick="setFilter('all', this)">All</button>
+    <button class="filter-btn" onclick="setFilter('Pending', this)">Pending</button>
+    <button class="filter-btn" onclick="setFilter('Completed', this)">Completed</button>
+  </div>
+
+  <div class="table-wrap">
+    <div class="loading" id="loading">Loading tickets...</div>
+    <table id="ticket-table" style="display:none;">
+      <thead>
+        <tr>
+          <th>JRF #</th>
+          <th>Date</th>
+          <th>Name</th>
+          <th>Position</th>
+          <th>Problem</th>
+          <th>Recommendation</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="ticket-body"></tbody>
+    </table>
+    <div class="empty" id="empty" style="display:none;">No tickets found.</div>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  let allTickets  = [];
+  let activeFilter = 'all';
+
+  function loadTickets() {
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('ticket-table').style.display = 'none';
+    document.getElementById('empty').style.display = 'none';
+
+    google.script.run
+      .withSuccessHandler(function(tickets) {
+        allTickets = tickets;
+        updateStats(tickets);
+        renderTable(tickets);
+        document.getElementById('loading').style.display = 'none';
+      })
+      .withFailureHandler(function(err) {
+        document.getElementById('loading').textContent = 'Error loading tickets: ' + err.message;
+      })
+      .getTickets();
+  }
+
+  function updateStats(tickets) {
+    const pending   = tickets.filter(t => t.status !== 'Completed').length;
+    const completed = tickets.filter(t => t.status === 'Completed').length;
+    document.getElementById('count-all').textContent       = tickets.length;
+    document.getElementById('count-pending').textContent   = pending;
+    document.getElementById('count-completed').textContent = completed;
+  }
+
+  function setFilter(filter, btn) {
+    activeFilter = filter;
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const filtered = filter === 'all'
+      ? allTickets
+      : allTickets.filter(t => t.status === filter);
+    renderTable(filtered);
+  }
+
+  function renderTable(tickets) {
+    const tbody = document.getElementById('ticket-body');
+    const table = document.getElementById('ticket-table');
+    const empty = document.getElementById('empty');
+
+    tbody.innerHTML = '';
+
+    if (tickets.length === 0) {
+      table.style.display = 'none';
+      empty.style.display = 'block';
+      return;
+    }
+
+    tickets.slice().reverse().forEach(function(t) {
+      const isDone = t.status === 'Completed';
+      const row = document.createElement('tr');
+      row.id = 'row-' + t.jrfNo;
+      row.innerHTML =
+        '<td><strong>' + esc(t.jrfNo) + '</strong></td>' +
+        '<td>' + esc(t.date) + '</td>' +
+        '<td>' + esc(t.name) + '</td>' +
+        '<td>' + esc(t.position) + '</td>' +
+        '<td class="td-problem" title="' + esc(t.problem) + '">' + esc(t.problem) + '</td>' +
+        '<td>' + esc(t.recType) + '</td>' +
+        '<td><span class="badge ' + (isDone ? 'badge-completed' : 'badge-pending') + '">' + esc(t.status) + '</span></td>' +
+        '<td><div class="actions">' +
+          '<button class="btn ' + (isDone ? 'btn-disabled' : 'btn-complete') + '" ' +
+            (isDone ? 'disabled' : 'onclick="markComplete(\'' + esc(t.jrfNo) + '\')"') +
+            '>&#10003; Complete</button>' +
+          '<button class="btn btn-pdf" onclick="downloadPdf(\'' + esc(t.jrfNo) + '\')">&#8595; PDF</button>' +
+        '</div></td>';
+      tbody.appendChild(row);
+    });
+
+    table.style.display = 'table';
+    empty.style.display = 'none';
+  }
+
+  function markComplete(jrfNo) {
+    showToast('Updating ticket ' + jrfNo + '...');
+    google.script.run
+      .withSuccessHandler(function(ok) {
+        if (ok) {
+          const t = allTickets.find(x => x.jrfNo === jrfNo);
+          if (t) t.status = 'Completed';
+          updateStats(allTickets);
+          const filtered = activeFilter === 'all' ? allTickets : allTickets.filter(x => x.status === activeFilter);
+          renderTable(filtered);
+          showToast('Ticket ' + jrfNo + ' marked as Completed.');
+        } else {
+          showToast('Could not update ticket. Please try again.');
+        }
+      })
+      .withFailureHandler(function(err) {
+        showToast('Error: ' + err.message);
+      })
+      .updateTicketStatus(jrfNo);
+  }
+
+  function downloadPdf(jrfNo) {
+    showToast('Generating PDF for ' + jrfNo + '...');
+    google.script.run
+      .withSuccessHandler(function(base64) {
+        const bytes    = atob(base64);
+        const arr      = new Uint8Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+        const blob     = new Blob([arr], { type: 'application/pdf' });
+        const url      = URL.createObjectURL(blob);
+        const a        = document.createElement('a');
+        a.href         = url;
+        a.download     = 'ITJRF-' + jrfNo + '.pdf';
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('PDF downloaded for ' + jrfNo + '.');
+      })
+      .withFailureHandler(function(err) {
+        showToast('PDF error: ' + err.message);
+      })
+      .generateFormPdf(jrfNo);
+  }
+
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.display = 'block';
+    clearTimeout(t._timer);
+    t._timer = setTimeout(function() { t.style.display = 'none'; }, 3500);
+  }
+
+  function esc(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  window.addEventListener('load', loadTickets);
+</script>
+</body>
+</html>

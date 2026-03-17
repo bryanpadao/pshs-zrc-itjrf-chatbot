@@ -5,12 +5,12 @@
 
 // --- Configuration -----------------------------------------------------------
 
-const SPREADSHEET_ID  = ''; // TODO: paste your Google Sheet ID here
+const SPREADSHEET_ID  = '1CDYLMBVKs2Ec1ufxFLi6Ed-SUU7faDWJkdrlt6TjQPE'; // TODO: paste your Google Sheet ID here
 const KB_SHEET_NAME   = 'KB';
-const ITJRF_SHEET_NAME = 'ITJRF';
-const GEMINI_MODEL    = 'gemini-1.5-flash';
+const ITJRF_SHEET_NAME = 'Tickets';
+const GEMINI_MODEL    = 'gemini-2.5-flash-lite';
 const GEMINI_ENDPOINT =
-  `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+  `https://generativelanguage.googleapis.com/v1/models/${GEMINI_MODEL}:generateContent`;
 
 const RECOMMENDATION_TYPES = [
   'Hardware Repair',
@@ -22,7 +22,7 @@ const RECOMMENDATION_TYPES = [
   'Software Installation',
   'In-Campus Repair',
   'External Service Provider Repair',
-  'Others',
+  'Others, Repair',
 ];
 
 // Form fields collected step-by-step when state === 'collecting'
@@ -57,7 +57,13 @@ const FORM_STEPS = [
 // Entry Points
 // =============================================================================
 
-function doGet() {
+function doGet(e) {
+  const page = (e && e.parameter && e.parameter.page) || '';
+  if (page === 'dashboard') {
+    return HtmlService.createHtmlOutputFromFile('Dashboard')
+      .setTitle('PSHS ZRC IT Dashboard')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
   return HtmlService.createHtmlOutputFromFile('Index')
     .setTitle('PSHS ZRC IT Support Chatbot')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
@@ -96,6 +102,22 @@ function doPost(e) {
       session: {},
     });
   }
+}
+function processChat(params) {
+  const message = (params.message || '').trim();
+  const session = params.session || {};
+
+  if (!message) return { reply: 'Please type a message.', session };
+
+  let result;
+  if (session.state === 'collecting') {
+    result = handleFormStep(message, session);
+  } else if (session.state === 'confirm') {
+    result = handleConfirm(message, session);
+  } else {
+    result = handleChat(message, session);
+  }
+  return result;
 }
 
 function jsonResponse(data) {
@@ -333,13 +355,17 @@ function callGemini(message, history, kbContext) {
        'end your reply with the exact signal: %%FILE_TICKET:<one-sentence summary of the problem>%% ' +
        '— do not mention this signal to the user in the visible part of your reply.\n' +
     '5. Do not make up ticket numbers or form details.\n' +
-    '6. You are ONLY for IT support topics. Politely decline off-topic requests.\n\n' +
+    '6. You handle IT support AND information/publication requests (graphic design, pubmat, social media posting, certificates) since the IT unit also serves as the designated Information Officers of PSHS ZRC. Accept and assist with these requests. Publication and design requests should use "Others, Repair" as the recommendation type.\n\n' +
 
     'ITJRF Recommendation Types (for reference):\n' +
     RECOMMENDATION_TYPES.map((t, i) => `${i + 1}. ${t}`).join('\n');
 
   // --- Build contents array ---
-  const contents = [];
+  // v1 does not support system_instruction; inject it as the first turn instead
+  const contents = [
+    { role: 'user',  parts: [{ text: systemText }] },
+    { role: 'model', parts: [{ text: 'Understood. I will follow these instructions.' }] },
+  ];
 
   // Prior history (oldest first, max 10 turns = 20 messages)
   const recent = history.slice(-10);
@@ -357,7 +383,6 @@ function callGemini(message, history, kbContext) {
 
   // --- API request ---
   const payload = {
-    system_instruction: { parts: [{ text: systemText }] },
     contents,
     generationConfig: {
       temperature: 0.4,
@@ -502,4 +527,140 @@ function appendHistory(history, userText, modelText) {
   ];
   // Keep the last 20 messages
   return updated.slice(-20);
+}
+
+// =============================================================================
+// Dashboard Functions
+// =============================================================================
+
+/**
+ * Returns all tickets from the Tickets sheet as an array of objects.
+ */
+function getTickets() {
+  const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
+  if (!sheet) return [];
+
+  const data    = sheet.getDataRange().getValues();
+  const tickets = [];
+  for (let i = 1; i < data.length; i++) {
+    if (!data[i][0]) continue;
+    tickets.push({
+      jrfNo:      String(data[i][0]),
+      date:       data[i][1] ? Utilities.formatDate(new Date(data[i][1]), Session.getScriptTimeZone(), 'yyyy-MM-dd') : '',
+      name:       data[i][2],
+      position:   data[i][3],
+      supervisor: data[i][4],
+      problem:    data[i][5],
+      recType:    data[i][6],
+      status:     data[i][7],
+    });
+  }
+  return tickets;
+}
+
+/**
+ * Marks a ticket as Completed and sets the Date Completed column.
+ */
+function updateTicketStatus(jrfNo) {
+  const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
+  if (!sheet) return false;
+
+  const data  = sheet.getDataRange().getValues();
+  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(jrfNo)) {
+      sheet.getRange(i + 1, 8).setValue('Completed'); // Column H — Status
+      sheet.getRange(i + 1, 10).setValue(today);       // Column J — Date Completed
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Copies the Template tab, fills in ticket data, exports as A4 PDF (base64).
+ */
+function generateFormPdf(jrfNo) {
+  const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
+  if (!sheet) throw new Error('Tickets sheet not found');
+
+  // Find ticket row
+  const data = sheet.getDataRange().getValues();
+  let row    = null;
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === String(jrfNo)) { row = data[i]; break; }
+  }
+  if (!row) throw new Error('Ticket not found: ' + jrfNo);
+
+  const ticket = {
+    jrfNumber:      row[0],
+    date:           row[1] ? Utilities.formatDate(new Date(row[1]), Session.getScriptTimeZone(), 'MM/dd/yyyy') : '',
+    name:           row[2],
+    position:       row[3],
+    supervisor:     row[4],
+    problem:        row[5],
+    recommendation: row[6],
+  };
+
+  // Copy Template tab
+  const template = ss.getSheetByName('Template');
+  if (!template) throw new Error('Template sheet not found');
+
+  const tempName = 'PDF_' + jrfNo;
+  const existing = ss.getSheetByName(tempName);
+  if (existing) ss.deleteSheet(existing);
+
+  const temp = template.copyTo(ss);
+  temp.setName(tempName);
+
+  // Write ticket values (cell map from CLAUDE.md)
+  temp.getRange('M6').setValue(ticket.jrfNumber);
+  temp.getRange('F6').setValue(ticket.name);
+  temp.getRange('F7').setValue(ticket.position);
+  temp.getRange('F9').setValue(ticket.supervisor);
+  temp.getRange('M8').setValue(ticket.date);
+  temp.getRange('C11').setValue(ticket.problem);
+
+  // Recommendation type checkboxes
+  const checkboxMap = {
+    'Hardware Repair':              'D23',
+    'Hardware Installation':        'G23',
+    'Network Connection':           'K23',
+    'Preventive Maintenance':       'P23',
+    'Software Development':         'D24',
+    'Software Modification':        'G24',
+    'Software Installation':        'K24',
+    'Others, Repair':               'P24',
+    'In-Campus Repair':             'G21',
+    'External Service Provider Repair': 'K21',
+  };
+  const checkCell = checkboxMap[ticket.recommendation];
+  if (checkCell) temp.getRange(checkCell).setValue('✓');
+
+  SpreadsheetApp.flush();
+
+  // Export as A4 PDF
+  const exportUrl =
+    'https://docs.google.com/spreadsheets/d/' + SPREADSHEET_ID + '/export' +
+    '?format=pdf&gid=' + temp.getSheetId() +
+    '&size=A4&portrait=true&fitw=true' +
+    '&gridlines=false&printtitle=false&sheetnames=false' +
+    '&top_margin=0.25&bottom_margin=0.25&left_margin=0.25&right_margin=0.25';
+
+  const token    = ScriptApp.getOAuthToken();
+  const response = UrlFetchApp.fetch(exportUrl, {
+    headers: { Authorization: 'Bearer ' + token },
+    muteHttpExceptions: true,
+  });
+
+  const base64 = Utilities.base64Encode(response.getBlob().getBytes());
+
+  // Clean up temp sheet
+  ss.deleteSheet(temp);
+
+  return base64;
 }
