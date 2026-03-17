@@ -13,43 +13,89 @@
 |------|--------|
 | Project name | PSHS ZRC IT Job Request Form Chatbot |
 | School | Philippine Science High School — Zamboanga Regional Campus (PSHS ZRC) |
-| Purpose | Faculty and staff report IT issues via chat; bot auto-generates ITJRF tickets |
+| Purpose | Faculty and staff report IT issues via chat; bot auto-generates ITJRF tickets with multi-step approval workflow |
 | Platform | Google Apps Script + Google Sheets |
-| AI model | Google Gemini API — model: `gemini-1.5-flash` (free tier, 1,500 req/day) |
-| Approach | RAG — Apps Script searches KnowledgeBase sheet before calling Gemini |
+| AI model | Google Gemini API — model: `gemini-2.5-flash-lite` (free tier) |
+| Approach | RAG — Apps Script searches KB sheet before calling Gemini |
 | Official form ID | PSHS-00-F-ITU-01-Ver02-Rev2-12/31/21 |
 | Cost | PHP 0.00 — Gemini free tier + Google Sheets + Apps Script are all free |
 | GitHub repo | `pshs-zrc-itjrf-chatbot` (private) |
+| Spreadsheet ID | `1CDYLMBVKs2Ec1ufxFLi6Ed-SUU7faDWJkdrlt6TjQPE` |
+| IT Staff | Philip Bryan G. Padao, Danny A. Sulit |
+| Campus Director | Edman H. Gallamaso |
 
 ---
 
-## 2. Architecture
+## 2. Ticket lifecycle (approval workflow)
+
+```
+[User submits ticket via chatbot]
+         |
+         v
+  Pending Supervisor Approval
+         | supervisor clicks Approve in email
+         v
+  Pending IT Assessment
+         | IT staff submits Assess modal (recommendation + assessment + target date)
+         v
+  Pending Director Approval
+         | director clicks Approve in email
+         v
+  In Progress
+         | IT staff submits Complete modal (action taken + task result)
+         v
+  Completed
+```
+- At any approval step, clicking **Reject** sets status to `Rejected`.
+- Each approve/reject link is a one-time UUID token stored in the `Approvals` sheet.
+
+---
+
+## 3. Architecture
 
 ```
 [Faculty / Staff browser]
         |
-        | HTTP POST  { message, history[], action }
+        | HTTP POST  { message, session }
         v
-[Index.html] --> [doPost(e) in Code.gs]
+[Index.html] --> [processChat() / doPost(e) in Code.gs]
                         |
-                        |-- searchKnowledgeBase(message)  reads KnowledgeBase tab
-                        |-- callGemini(history, context)  calls Gemini API
-                        |-- saveTicket(ticket)            appends row to Tickets tab
-                        |-- generateForm(ticket)          copies Template tab, fills cells
+                        |-- handleChat()         RAG + Gemini, detects %%FILE_TICKET%% signal
+                        |-- handleFormStep()     collects fields step-by-step
+                        |-- handleConfirm()      yes/no before saving
+                        |-- saveTicket()         appends row; sends supervisor approval email
                         v
-              [Google Sheet: Tickets tab + per-ticket Template copy]
+              [Google Sheet: Tickets tab]
+
+[Supervisor / Director email client]
+        | clicks Approve/Reject link → doGet(?token=X&action=approve|reject)
+        v
+[handleApproval()] → updates ticket status → notifies IT staff by email
+
+[IT Staff browser]
+        |
+        | HTTP GET  ?page=dashboard
+        v
+[Dashboard.html] <--> [Code.gs server functions]
+                              |-- getTickets()            returns all ticket rows
+                              |-- submitAssessment()      saves recommendation+assessment; sends director email
+                              |-- updateTicketStatus()    marks Completed + writes action taken + task result
+                              |-- updateTicketDetails()   corrects name/position/supervisor/problem
+                              |-- assignStaff()           updates Assigned Staff col
+                              |-- generateFormPdf()       exports Template copy as PDF (base64)
 ```
 
 ---
 
-## 3. Repository file structure
+## 4. Repository file structure
 
 ```
 pshs-zrc-itjrf-chatbot/
 ├── CLAUDE.md                       <- this file, auto-read by Claude Code
 ├── appsscript/
-│   ├── Code.gs                     <- backend: doPost, searchKB, callGemini, saveTicket, generateForm
-│   ├── Index.html                  <- frontend: chat UI
+│   ├── Code.gs                     <- backend: all server-side functions
+│   ├── Index.html                  <- frontend: chat UI for faculty/staff
+│   ├── Dashboard.html              <- frontend: IT staff ticket management dashboard
 │   └── appsscript.json             <- Apps Script manifest
 ├── docs/
 │   ├── ITJRF.xlsx                  <- original blank form (do not modify)
@@ -59,91 +105,103 @@ pshs-zrc-itjrf-chatbot/
 
 ---
 
-## 4. Google Sheet — 3 required tabs
+## 5. Google Sheet — tabs
 
 ### Tab name: `Tickets`
 One row per submitted ticket. Row 1 is the header row.
 
-| Column | Header | Notes |
-|--------|--------|-------|
-| A | JRF # | Auto-generated format: `ZRC-YYYY-NNN` e.g. ZRC-2025-001 |
-| B | Date | Submission date, set by Apps Script |
+| Col | Header | Notes |
+|-----|--------|-------|
+| A | JRF # | 4-digit padded string e.g. `0001` |
+| B | Date | Submission date `yyyy-MM-dd` |
 | C | Name | Requester full name |
 | D | Position | Requester position / role |
-| E | Supervisor | Immediate supervisor name |
-| F | Problem | Full problem description from the conversation |
-| G | Recommendation | One of the 10 exact ITJRF recommendation types (see Section 5) |
-| H | Status | Default value: `Open` — IT staff updates to `In Progress` or `Completed` |
-| I | Assigned Staff | Filled by IT unit after ticket is received |
-| J | Date Completed | Filled by IT unit when resolved |
+| E | Supervisor | Immediate supervisor name (auto-filled from Departments sheet) |
+| F | Problem Description | Full problem description |
+| G | Recommendation Type | Set by IT staff during assessment — one of 10 exact types |
+| H | Status | `Pending Supervisor Approval` → `Pending IT Assessment` → `Pending Director Approval` → `In Progress` → `Completed` / `Rejected` |
+| I | Assigned Staff | Set via Dashboard Assess modal |
+| J | Date Completed | Set automatically when marked Completed |
+| K | Assessment | IT staff technical assessment |
+| L | Action Taken | Steps taken to resolve |
+| M | Task Result | `Successful` or `Failed` |
+| N | Target Date | Target completion date set during assessment |
+| O | Others Description | Free-text description when recommendation is "Others, Repair" → written to Template cell P25 |
 
 ### Tab name: `KnowledgeBase`
-The RAG data source. Row 1 is the header row.
+RAG data source. Tab name must be exactly `KnowledgeBase`. Row 1 = header.
 
 | Column | Header | Notes |
 |--------|--------|-------|
-| A | Category | Network / Hardware / Software / Account / Maintenance / External |
-| B | Keywords | Comma-separated trigger words the user might type |
-| C | Problem Description | Full description of the issue |
-| D | Standard Solution | Step-by-step fix for IT staff |
-| E | Recommendation Type | Must match one of the 10 ITJRF types exactly (see Section 5) |
-| F | Priority Level | High / Medium / Low |
-| G | Estimated Duration | e.g. `30-60 mins` |
+| A | Issue | Short title |
+| B | Solution | Step-by-step fix |
+| C | Category | Network / Hardware / Software / Account / Maintenance / External |
+| D | Keywords | Comma-separated trigger words (optional) |
+
+### Tab name: `Departments`
+Maps department/office to supervisor for auto-fill during chatbot form flow.
+
+| Column | Header | Notes |
+|--------|--------|-------|
+| A | Department/Office | e.g. `OCD`, `CID`, `FAD`, `SSD` |
+| B | Supervisor Name | e.g. `Edman H. Gallamaso` |
+| C | Supervisor Email | e.g. `supervisor@zrc.pshs.edu.ph` |
+
+### Tab name: `Approvals`
+Stores one-time approval tokens. Auto-created on first email send.
+
+| Column | Header | Notes |
+|--------|--------|-------|
+| A | Token | UUID generated by `Utilities.getUuid()` |
+| B | JRF# | Ticket this token belongs to |
+| C | Type | `supervisor` or `director` |
+| D | Used | Empty until clicked; then set to `approve/reject + ISO timestamp` |
 
 ### Tab name: `Template`
-A copy of the official ITJRF layout. `generateForm()` copies this tab per ticket.
+Official ITJRF layout. `generateFormPdf()` copies this tab, fills it, exports PDF, then deletes the copy.
 
-**EXACT cell map verified from ITJRF.xlsx — use these coordinates when writing values:**
+**EXACT cell map — always write to the top-left cell of each merged range:**
 
-| Cell | Form label | Value to write |
-|------|-----------|----------------|
-| M6 | IT JRF #: | ticket.jrfNumber |
-| F6 | Name | ticket.name |
-| F7 | Position | ticket.position |
-| F9 | Immediate Supervisor | ticket.supervisor |
-| M8 | Date: | ticket.date |
-| C11 | Request / Problem (fill area) | ticket.problem |
-| D23 | Hardware Repair checkbox area | write "X" if recommendation matches |
-| G23 | Hardware Installation checkbox area | write "X" if recommendation matches |
-| K23 | Network Connection checkbox area | write "X" if recommendation matches |
-| P23 | Preventive Maintenance checkbox area | write "X" if recommendation matches |
-| D24 | Software Development checkbox area | write "X" if recommendation matches |
-| G24 | Software Modification checkbox area | write "X" if recommendation matches |
-| K24 | Software Installation checkbox area | write "X" if recommendation matches |
-| P24 | Others, Repair checkbox area | write "X" if recommendation matches |
-| G21 | In-Campus Repair checkbox area | write "X" if recommendation matches |
-| K21 | External Service Provider Repair checkbox area | write "X" if recommendation matches |
-| C28 | Assigned Staff name | leave blank on submit |
-| I27 | Target Date of Completion | leave blank on submit |
-| B31 | Action Taken (fill area) | leave blank on submit |
-| C38 | Date Completed | leave blank on submit |
-| H38 | Serviced by | leave blank on submit |
-| N38 | Confirmed by User | leave blank on submit |
+| Merged range | Form field | Value | Notes |
+|-------------|-----------|-------|-------|
+| O6:Q7 | IT JRF #: | ticket.jrfNumber → **O6** | |
+| E6:L6 | Name | ticket.name → **E6** | **bold** |
+| E7:L7 | Position | ticket.position → **E7** | |
+| E8:L8 | Immediate Supervisor | ticket.supervisor → **E8** | **bold** |
+| O8:Q9 | Date: | ticket.date → **O8** | |
+| E10:Q14 | Request / Problem | ticket.problem → **E10** | 5 rows, writeTextBlock |
+| E15:Q19 | Assessment | ticket.assessment → **E15** | 5 rows, writeTextBlock |
+| E30:Q33 | Action Taken | ticket.actionTaken → **E30** | 4 rows, writeTextBlock |
+| B28:F28 | Assigned Staff | ticket.assignedStaff → **B28** | **bold** |
+| H28:L28 | Target Date of Completion | ticket.targetDate → **H28** | |
+| N28:Q28 | Campus Director | `Edman H. Gallamaso` → **N28** | **bold**, always auto-filled |
+| P25:Q25 | Others description | ticket.othersDescription → **P25** | only when recommendation = `Others, Repair` |
+| F35 | Task Successful checkbox | `✓` if Successful → **F35** | centered |
+| L35 | Task Failed checkbox | `✓` if Failed → **L35** | centered |
+| B39:E39 | Date Completed | ticket.dateCompleted → **B39** | auto from sheet |
+| G39:K39 | Serviced by | ticket.assignedStaff → **G39** | **bold** |
+| M39:Q39 | Confirmed by User | ticket.name → **M39** | **bold** |
 
-**Read-only label cells — never overwrite these:**
+**Recommendation checkboxes (write "✓" into matching cell, centered):**
 
-| Cell | Value |
-|------|-------|
-| B1 | PHILIPPINE SCIENCE HIGH SCHOOL SYSTEM |
-| B2 | CAMPUS: ZRC |
-| B4 | IT JOB REQUEST FORM |
-| B6 | Requested by: |
-| B8 | Approved by: |
-| B10 | Request/ Problem: |
-| B15 | Assessment: |
-| B21 | Recommendation: |
-| B27 | Assigned Staff (IT/ ISA): |
-| B30 | Action Taken: |
-| B35 | Status/ Condition: |
-| B38 | Date Completed: |
-| B43 | PSHS-00-F-ITU-01-Ver02-Rev2-12/31/21 |
+| Cell | Recommendation type |
+|------|---------------------|
+| C23 | Hardware Repair |
+| F23 | Hardware Installation |
+| J23 | Network Connection |
+| O23 | Preventive Maintenance |
+| C24 | Software Development |
+| F24 | Software Modification |
+| J24 | Software Installation |
+| O24 | Others, Repair |
+| F21 | In-Campus Repair |
+| J21 | External Service Provider Repair |
+
+**writeTextBlock helper** — breaks merged block into per-row merges, pre-wraps text at 120 chars per line, sets `WrapStrategy.CLIP`, locks each row height at 21px.
 
 ---
 
-## 5. ITJRF recommendation types (exact values — do not change spelling)
-
-The `ticket.recommendation` field and the KnowledgeBase `Recommendation Type` column
-must use one of these exactly, including capitalisation and commas:
+## 6. ITJRF recommendation types (exact values — do not change spelling)
 
 ```
 Hardware Repair
@@ -158,181 +216,205 @@ External Service Provider Repair
 Others, Repair
 ```
 
+> Publication/design/pubmat requests → use `Others, Repair`. Recommendation is set by IT staff on the Dashboard, NOT asked in the chatbot.
+
 ---
 
-## 6. Code.gs — five functions to build
+## 7. Script Properties (set in Apps Script Project Settings)
 
-### `doPost(e)`
-Entry point for every HTTP POST from Index.html.
+| Property | Value | Purpose |
+|----------|-------|---------|
+| `GEMINI_API_KEY` | key from aistudio.google.com | Gemini API authentication |
+| `WEBAPP_URL` | deployed `/exec` URL | Base URL for approval email links |
+| `DIRECTOR_EMAIL` | director's email address | Recipient for director approval emails |
+| `IT_STAFF_EMAIL` | IT staff email(s), comma-separated | Notification when approvals are granted |
 
+---
+
+## 8. Code.gs — constants and functions
+
+### Constants
 ```javascript
-function doPost(e) {
-  const body = JSON.parse(e.postData.contents);
-  const { message, history, action } = body;
-
-  if (action === 'saveTicket') {
-    return saveTicket(body.ticket);
-  }
-
-  const context = searchKnowledgeBase(message);
-  const reply = callGemini(history, context);
-
-  return ContentService
-    .createTextOutput(JSON.stringify({ reply }))
-    .setMimeType(ContentService.MimeType.JSON);
-}
+const SPREADSHEET_ID       = '1CDYLMBVKs2Ec1ufxFLi6Ed-SUU7faDWJkdrlt6TjQPE';
+const KB_SHEET_NAME        = 'KnowledgeBase';
+const ITJRF_SHEET_NAME     = 'Tickets';
+const APPROVALS_SHEET_NAME = 'Approvals';
+const GEMINI_MODEL         = 'gemini-2.5-flash-lite';
+const GEMINI_ENDPOINT      = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 ```
 
-### `searchKnowledgeBase(message)`
-- Opens the `KnowledgeBase` tab
-- Splits `message` into individual words
-- For each row checks if any word in column B (Keywords) matches any word in the message (case-insensitive)
-- Returns up to 3 matching rows as a plain text string
-- Returns empty string if no matches
+### Entry points
+- **`doGet(e)`** — serves `Index.html` by default; `Dashboard.html` when `?page=dashboard`; routes to `handleApproval()` when `?token=X&action=Y`
+- **`doPost(e)`** — routes to `handleChat`, `handleFormStep`, or `handleConfirm`
+- **`processChat(params)`** — called from `Index.html` via `google.script.run`
 
-### `callGemini(history, context)`
-- Gets API key from Script Properties key `GEMINI_API_KEY`
-- Endpoint: `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=KEY`
-- Sends system prompt (Section 7) + KB context + full history array
-- Uses `UrlFetchApp.fetch()` — method POST, contentType application/json
-- Returns the reply text string
+### Chat flow (session-based state machine)
 
-### `saveTicket(ticket)`
-- Opens the `Tickets` tab
-- Counts existing data rows to generate next JRF number in format `ZRC-YYYY-NNN`
-- Appends one new row in the column order defined in Section 4
-- Sets Status to `Open` by default
-- Calls `generateForm(ticket)` after appending the row
-- Returns JSON containing the generated `jrfNumber`
+| `session.state` | Handler | Description |
+|-----------------|---------|-------------|
+| _(none)_ | `handleChat()` | RAG + Gemini; detects `%%FILE_TICKET:<desc>%%` signal |
+| `'collecting'` | `handleFormStep()` | Walks through FORM_STEPS |
+| `'confirm'` | `handleConfirm()` | Waits for yes/no; on yes → `saveTicket()` + locks chat UI |
 
-### `generateForm(ticket)`
-- Makes a copy of the `Template` tab
-- Renames the copy to the ticket JRF number (e.g. `ZRC-2025-001`)
-- Writes ticket values only into the value cells listed in Section 4
-- Writes `"X"` into the cell matching `ticket.recommendation` from the checkbox cells in Section 4
-- Does NOT overwrite any label cells listed in Section 4
+### Form steps (FORM_STEPS array) — no rec_type (set by IT staff on Dashboard)
+1. `name` — full name
+2. `position` — position/designation
+3. `department` — department/office → triggers `lookupDepartment()` to auto-fill supervisor
+4. `supervisor` — *(skippable if auto-filled from Departments sheet)*
+5. `description` — problem description *(skippable — pre-filled from chat signal)*
+
+### Backend functions
+- **`searchKnowledgeBase(query)`** — keyword scoring against KnowledgeBase sheet, returns top 3 or null
+- **`callGemini(message, history, kbContext)`** — Gemini API call with system prompt + KB context + history
+- **`saveTicket(data)`** — appends 15-column row; sends supervisor approval email
+- **`appendHistory(history, userText, modelText)`** — rolling 20-message history
+
+### Approval functions
+- **`sendApprovalEmail(type, jrfNo, ticket)`** — generates UUID token, stores in Approvals sheet, emails supervisor or director with one-time approve/reject links
+- **`handleApproval(token, action)`** — validates token, updates ticket status, notifies IT staff, returns HTML confirmation page
+- **`approvalHtmlPage(title, message)`** — returns styled HTML response for approval link clicks
+- **`getStaffEmail(name)`** — looks up email from optional `Staff` sheet by name
+- **`lookupDepartment(dept)`** — looks up supervisor name + email from `Departments` sheet
+
+### Dashboard functions (called via `google.script.run`)
+- **`getTickets()`** — returns array of 15-field ticket objects
+- **`submitAssessment(jrfNo, assignedStaff, recommendation, assessment, targetDate, othersDescription)`** — saves cols G/H/I/K/N/O; sends director approval email
+- **`updateTicketStatus(jrfNo, actionTaken, taskResult)`** — validates; writes cols H/J/L/M; requires status = `In Progress`
+- **`updateTicketDetails(jrfNo, name, position, supervisor, problem)`** — corrects cols C/D/E/F; available for all ticket statuses
+- **`assignStaff(jrfNo, staffName)`** — writes col I only
+- **`generateFormPdf(jrfNo)`** — copies Template, fills all cells (bold names, auto-fills Campus Director N28), exports A4 PDF as base64, deletes temp sheet
 
 ---
 
-## 7. Gemini system prompt
-
-Use this verbatim as the system instruction in `callGemini()`.
-Replace `{context}` with the string returned by `searchKnowledgeBase()`.
+## 9. Gemini system prompt
 
 ```
-You are the IT Help Desk assistant of Philippine Science High School -
-Zamboanga Regional Campus (PSHS ZRC).
+You are the IT Support Chatbot for PSHS Zamboanga Regional Campus (PSHS ZRC).
+You help staff troubleshoot IT issues and file IT Job Request Forms (ITJRF).
 
-Your job is to help faculty and staff report IT issues by collecting all
-the information needed to fill out an IT Job Request Form (ITJRF).
-Be friendly, concise, and professional. Ask one or two questions at a time.
+Behavior rules:
+1. Be concise, professional, and friendly.
+2. When answering technical questions, use the Knowledge Base entries provided.
+3. If no KB entry is relevant, use your own knowledge to help troubleshoot.
+4. If the user wants to file an IT Job Request (or the issue clearly requires one),
+   end your reply with the exact signal: %%FILE_TICKET:<one-sentence summary>%%
+   — do not mention this signal to the user in the visible part of your reply.
+5. Do not make up ticket numbers or form details.
+6. You handle IT support AND information/publication requests (graphic design, pubmat,
+   social media posting, certificates) since the IT unit also serves as the designated
+   Information Officers of PSHS ZRC. Publication and design requests use "Others, Repair".
+7. This chatbot does NOT support file uploads or attachments. If a user mentions
+   attaching or uploading files, politely inform them and ask them to describe in text.
 
-Collect these five fields through natural conversation:
-1. Full name
-2. Position / role at PSHS ZRC
-3. Immediate supervisor's name
-4. Full description of the IT problem
-5. Recommendation type - guide them to the correct option based on their problem
-
-Valid recommendation types (use exact spelling including commas):
-- Hardware Repair
-- Hardware Installation
-- Network Connection
-- Preventive Maintenance
-- Software Development
-- Software Modification
-- Software Installation
-- In-Campus Repair
-- External Service Provider Repair
-- Others, Repair
-
-If a CONTEXT section is provided below, use it to give accurate,
-school-specific troubleshooting guidance before collecting the fields.
-
-Once all five fields are collected, summarize the ticket clearly and ask:
-"Is this correct? Reply yes to submit."
-
-When the user confirms with yes, output ONLY the following JSON with no
-text before or after it:
-
-{"name":"","position":"","supervisor":"","problem":"","recommendation":""}
-
-CONTEXT:
-{context}
+ITJRF Recommendation Types (for reference):
+1. Hardware Repair  2. Hardware Installation  3. Network Connection
+4. Preventive Maintenance  5. Software Development  6. Software Modification
+7. Software Installation  8. In-Campus Repair  9. External Service Provider Repair
+10. Others, Repair
 ```
 
 ---
 
-## 8. Index.html — requirements
+## 10. Index.html — chat UI
 
-- Chat window with message bubbles: user on the right, bot on the left
-- Text input and Send button at the bottom; Enter key also sends
-- Full conversation history kept in a JS array named `history`
-- On every Send, POST to the Apps Script web app URL with `{ message, history }`
-- Append bot reply to the chat window and push it to `history`
-- After each bot reply, check if the text contains a JSON block `{...}`
-- If JSON is detected: parse it as the ticket object, hide the input bar, show a green Submit Ticket button
-- On Submit Ticket click, POST with `{ action: 'saveTicket', ticket: parsedTicket }`
-- On success response, show: "Ticket [JRF #] submitted. The IT unit will contact you shortly."
-- Primary color: `#1D9E75` (PSHS green), white background, Arial font
-- Must be responsive and work on mobile browsers
+- Chat bubbles: user right, bot left
+- Session object kept in JS, sent on every `processChat()` call
+- Response `{ reply, replies, session, submitted }`:
+  - If `replies` array has >1 item → render each as a **separate bubble** (used when Gemini acknowledgment + first form question are combined)
+  - If `submitted: true` → lock input, hide chat bar, show **"Start a New Conversation"** button
+- Primary color: `#1a3c6e` (PSHS dark blue)
 
 ---
 
-## 9. API key setup
+## 11. Dashboard.html — IT staff management UI
 
-> Never hardcode the API key in Code.gs. Always use Script Properties.
+Served at `?page=dashboard`. Uses `google.script.run` (no HTTP fetch).
 
-1. Apps Script → gear icon → **Project Settings**
-2. Scroll to **Script Properties** → **Add script property**
-3. Name: `GEMINI_API_KEY` / Value: your key from aistudio.google.com
-4. Click **Save script properties**
+### Features
+- **Stats bar**: Total / Active / Completed counts
+- **Filter buttons**: All / Pending Approval / Pending Assessment / Pending Director / In Progress / Completed
+- **Table columns**: JRF #, Date, Name, Position, Problem, Recommendation, Assigned Staff, Status, Actions
+- **Edit button** (every row): opens Edit modal to correct Name, Position, Supervisor, Problem Description
+- **Action buttons** by status:
+  - `Pending Supervisor Approval` / `Pending Director Approval` → "Awaiting approval…" (disabled)
+  - `Pending IT Assessment` → **Assess** button
+  - `In Progress` → **Complete** button
+  - `Completed` → **PDF** button
+- **Auto-refresh**: every 60 seconds (catches external email approval status changes)
+- **Last updated** timestamp shown in header
 
-In code:
-```javascript
-const API_KEY = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+### Assess modal fields
+- Assigned Staff dropdown (Philip Bryan G. Padao / Danny A. Sulit)
+- Recommendation Type dropdown (all 10 types) — **required**
+- "Specify Others" textarea — **required** and visible only when `Others, Repair` is selected
+- Target Date of Completion date input
+- Assessment textarea — **required**
+
+### Complete modal fields
+- Task Result radio (Successful / Failed) — **required**
+- Action Taken textarea — **required**
+
+### Edit modal fields
+- Full Name — **required**
+- Position / Designation
+- Immediate Supervisor
+- Problem Description
+
+---
+
+## 12. Setup instructions
+
+### Google Sheet tabs to create manually
+1. `Tickets` — auto-created with headers on first ticket
+2. `KnowledgeBase` — add issues/solutions (see `docs/knowledge-base-sample.csv`)
+3. `Departments` — columns: Department/Office | Supervisor Name | Supervisor Email
+4. `Template` — paste the official ITJRF layout (see `docs/ITJRF.xlsx`)
+5. `Approvals` — auto-created on first approval email
+
+### Script Properties to set
+```
+GEMINI_API_KEY   → from aistudio.google.com
+WEBAPP_URL       → your deployed /exec URL
+DIRECTOR_EMAIL   → e.g. director@zrc.pshs.edu.ph
+IT_STAFF_EMAIL   → e.g. pgpadao@zrc.pshs.edu.ph,dasulit@zrc.pshs.edu.ph
 ```
 
----
-
-## 10. Deployment
-
+### Deployment
 1. Apps Script → **Deploy → New deployment**
-2. Type: **Web app**
-3. Execute as: **Me**
-4. Who has access: **Anyone**
-5. Deploy → approve all permission prompts
-6. Copy the Web App URL → set it as the `SCRIPT_URL` constant in `Index.html`
+2. Type: **Web app** / Execute as: **Me** / Who has access: **Anyone**
+3. Copy the Web App URL → paste into `WEBAPP_URL` Script Property AND into `SCRIPT_URL` in `Index.html`
 
-> After any code change: **Deploy → Manage deployments → New version**.
-> The URL stays the same but the live code will not update until you do this.
+> **After any code change:** Deploy → Manage deployments → pencil → New version → Deploy.
 
 ---
 
-## 11. Known issues and fixes
+## 13. Known issues and decisions
 
-| Issue | Fix |
-|-------|-----|
-| Apps Script has no memory between requests | `Index.html` sends the full `history` array on every POST |
-| Code edits do not go live automatically | Always create a new deployment version after changes |
-| Two Google accounts (API key vs Sheet owner) | Fine — create Apps Script from the Sheet owner's account |
-| Gemini returns malformed JSON | Wrap JSON.parse in try/catch; if it fails treat the reply as plain text |
-| Recommendation value does not match exactly | Validate against the 10 exact strings in Section 5 before saving |
-| Wrong cell written in generateForm | Only use the verified cell addresses in Section 4 |
+| Issue | Fix / Decision |
+|-------|---------------|
+| Apps Script has no memory between requests | `Index.html` sends full `session` on every POST |
+| Code edits do not go live automatically | Always create a new deployment version |
+| Gemini mentions files | System prompt rule 7 blocks this |
+| First form question combined with Gemini reply | `replies[]` array — UI renders each as separate bubble |
+| Dashboard flickering on auto-refresh | Changed from 10s to 60s; table hides during load |
+| Recommendation not in chatbot | Removed from FORM_STEPS; now set by IT staff in Assess modal |
+| Supervisor email not found | Check Departments sheet col C has correct email; or add Staff sheet |
+| PDF rows expanding | `writeTextBlock` uses word-wrap at 120 chars + WrapStrategy.CLIP + setRowHeight(21) |
+| Others description in PDF | Saved to Tickets col O; written to Template cell P25 when recommendation = Others |
+| Campus Director always same | Hard-coded as `Edman H. Gallamaso` in `generateFormPdf`, written bold to N28 |
 
 ---
 
-## 12. How to start each Claude Code session
+## 14. How to start each Claude Code session
 
-Claude Code reads this file automatically from the project root.
-Just state your task — no need to re-paste context. Examples:
+Claude Code reads this file automatically. Just state your task. Examples:
 
-- "Write the complete `Code.gs` with all five functions."
-- "Build `Index.html` with the chat UI per the spec in CLAUDE.md."
-- "The `callGemini` function is returning a 400 error — here is the log: ..."
-- "Add a MailApp email alert inside `saveTicket` when a new ticket is written."
-- "The recommendation checkbox cell is not being marked in `generateForm`."
+- "The supervisor approval email is not being received — here is the log: ..."
+- "Add a Rejected filter button to the Dashboard."
+- "The PDF is writing to the wrong cell for Assessment."
+- "Add a new department to the Departments sheet lookup."
 
 ---
 
 *PSHS ZRC IT Unit — ITJRF Chatbot — Google Apps Script + Gemini API (free tier)*
+*IT Staff: Philip Bryan G. Padao | Danny A. Sulit | Campus Director: Edman H. Gallamaso*

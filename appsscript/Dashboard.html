@@ -95,12 +95,13 @@
     td { padding: 11px 14px; vertical-align: top; }
 
     .td-problem {
-      max-width: 260px;
+      max-width: 220px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
 
+    /* Status badges */
     .badge {
       display: inline-block;
       padding: 3px 10px;
@@ -110,10 +111,14 @@
       white-space: nowrap;
     }
 
-    .badge-pending   { background: #fff3cd; color: #856404; }
-    .badge-completed { background: #d1e7dd; color: #0a3622; }
+    .badge-supervisor  { background: #fff3cd; color: #856404; }
+    .badge-assessment  { background: #cff4fc; color: #055160; }
+    .badge-director    { background: #e2d9f3; color: #432874; }
+    .badge-inprogress  { background: #d1ecf1; color: #0c5460; }
+    .badge-completed   { background: #d1e7dd; color: #0a3622; }
+    .badge-rejected    { background: #f8d7da; color: #842029; }
 
-    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 
     .btn {
       padding: 5px 12px;
@@ -129,9 +134,13 @@
     .btn:hover  { opacity: 0.85; }
     .btn:active { opacity: 0.7; }
 
+    .btn-assess   { background: #0c5460; color: #fff; }
     .btn-complete { background: #1a3c6e; color: #fff; }
     .btn-pdf      { background: #e8edf5; color: #1a3c6e; }
-    .btn-disabled { background: #e0e0e0; color: #999; cursor: default; }
+    .btn-edit     { background: #fff3cd; color: #856404; border: 1px solid #ffe08a; }
+    .btn-disabled { background: #e0e0e0; color: #999; cursor: default; pointer-events: none; }
+    .btn-waiting  { background: #f8f9fa; color: #aaa; cursor: default; font-style: italic; pointer-events: none; border: 1px dashed #ccc; }
+    .btn-submit-edit { background: #856404; color: #fff; padding: 7px 20px; }
 
     .loading, .empty {
       text-align: center;
@@ -154,9 +163,111 @@
       z-index: 9999;
     }
 
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .modal-overlay.open { display: flex; }
+
+    .modal {
+      background: #fff;
+      border-radius: 12px;
+      padding: 28px 32px;
+      width: 100%;
+      max-width: 480px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+    }
+
+    .modal h2 {
+      font-size: 16px;
+      color: #1a3c6e;
+      margin-bottom: 4px;
+    }
+
+    .modal .modal-jrf {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 20px;
+    }
+
+    .form-group { margin-bottom: 16px; }
+
+    .form-group label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #444;
+      margin-bottom: 5px;
+    }
+
+    .form-group select,
+    .form-group input[type="date"],
+    .form-group textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: inherit;
+      resize: vertical;
+    }
+
+    .form-group select:focus,
+    .form-group input[type="date"]:focus,
+    .form-group textarea:focus {
+      outline: 2px solid #1a3c6e;
+      border-color: transparent;
+    }
+
+    .form-group textarea { min-height: 80px; }
+
+    .radio-group {
+      display: flex;
+      gap: 20px;
+      margin-top: 4px;
+    }
+
+    .radio-group label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      font-weight: 400;
+      color: #333;
+      cursor: pointer;
+    }
+
+    .radio-group input[type="radio"] { accent-color: #1a3c6e; width: 15px; height: 15px; }
+
+    .field-error {
+      font-size: 11px;
+      color: #c0392b;
+      margin-top: 4px;
+      display: none;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      margin-top: 20px;
+    }
+
+    .btn-cancel { background: #f0f2f5; color: #444; }
+    .btn-submit-assess   { background: #0c5460; color: #fff; padding: 7px 20px; }
+    .btn-submit-complete { background: #1a3c6e; color: #fff; padding: 7px 20px; }
+
     @media (max-width: 600px) {
       .container { padding: 16px; }
       header { padding: 12px 16px; }
+      .modal { padding: 20px 16px; margin: 16px; }
     }
   </style>
 </head>
@@ -167,9 +278,10 @@
     <h1>PSHS ZRC IT Unit — Ticket Dashboard</h1>
     <p>IT Job Request Form Management</p>
   </div>
-  <button class="btn btn-pdf" onclick="loadTickets()" style="font-size:13px;padding:8px 16px;">
-    &#8635; Refresh
-  </button>
+  <div style="text-align:right;">
+    <button class="btn btn-pdf" onclick="loadTickets()" style="font-size:13px;padding:8px 16px;">&#8635; Refresh</button>
+    <div id="last-updated" style="font-size:11px;opacity:0.6;margin-top:4px;"></div>
+  </div>
 </header>
 
 <div class="container">
@@ -180,8 +292,8 @@
       <div class="label">Total Tickets</div>
     </div>
     <div class="stat-card">
-      <div class="count" id="count-pending" style="color:#856404;">—</div>
-      <div class="label">Pending</div>
+      <div class="count" id="count-active" style="color:#856404;">—</div>
+      <div class="label">Active</div>
     </div>
     <div class="stat-card">
       <div class="count" id="count-completed" style="color:#0a3622;">—</div>
@@ -191,7 +303,10 @@
 
   <div class="filters">
     <button class="filter-btn active" onclick="setFilter('all', this)">All</button>
-    <button class="filter-btn" onclick="setFilter('Pending', this)">Pending</button>
+    <button class="filter-btn" onclick="setFilter('Pending Supervisor Approval', this)">Pending Approval</button>
+    <button class="filter-btn" onclick="setFilter('Pending IT Assessment', this)">Pending Assessment</button>
+    <button class="filter-btn" onclick="setFilter('Pending Director Approval', this)">Pending Director</button>
+    <button class="filter-btn" onclick="setFilter('In Progress', this)">In Progress</button>
     <button class="filter-btn" onclick="setFilter('Completed', this)">Completed</button>
   </div>
 
@@ -206,6 +321,7 @@
           <th>Position</th>
           <th>Problem</th>
           <th>Recommendation</th>
+          <th>Assigned Staff</th>
           <th>Status</th>
           <th>Actions</th>
         </tr>
@@ -217,11 +333,148 @@
 
 </div>
 
+<!-- Edit Ticket Details Modal -->
+<div class="modal-overlay" id="edit-overlay">
+  <div class="modal">
+    <h2>&#9998; Edit Ticket Details</h2>
+    <p class="modal-jrf" id="edit-jrf-label"></p>
+
+    <div class="form-group">
+      <label for="edit-name">Full Name <span style="color:#c0392b">*</span></label>
+      <input type="text" id="edit-name" style="width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px;font-family:inherit;">
+      <div class="field-error" id="err-edit-name">Name is required.</div>
+    </div>
+
+    <div class="form-group">
+      <label for="edit-position">Position / Designation</label>
+      <input type="text" id="edit-position" style="width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px;font-family:inherit;">
+    </div>
+
+    <div class="form-group">
+      <label for="edit-supervisor">Immediate Supervisor</label>
+      <input type="text" id="edit-supervisor" style="width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px;font-family:inherit;">
+    </div>
+
+    <div class="form-group">
+      <label for="edit-problem">Problem Description</label>
+      <textarea id="edit-problem" placeholder="Describe the issue..."></textarea>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-cancel" onclick="closeEditModal()">Cancel</button>
+      <button class="btn btn-submit-edit" onclick="submitEdit()">&#10003; Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<!-- Assess Modal (Pending IT Assessment → Pending Director Approval) -->
+<div class="modal-overlay" id="assess-overlay">
+  <div class="modal">
+    <h2>Submit Assessment for Director Approval</h2>
+    <p class="modal-jrf" id="assess-jrf-label"></p>
+
+    <div class="form-group">
+      <label for="assess-staff">Assigned Staff</label>
+      <select id="assess-staff">
+        <option value="">— Select staff —</option>
+        <option value="Philip Bryan G. Padao">Philip Bryan G. Padao</option>
+        <option value="Danny A. Sulit">Danny A. Sulit</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label for="assess-recommendation">Recommendation Type <span style="color:#c0392b">*</span></label>
+      <select id="assess-recommendation">
+        <option value="">— Select recommendation —</option>
+        <option>Hardware Repair</option>
+        <option>Hardware Installation</option>
+        <option>Network Connection</option>
+        <option>Preventive Maintenance</option>
+        <option>Software Development</option>
+        <option>Software Modification</option>
+        <option>Software Installation</option>
+        <option>In-Campus Repair</option>
+        <option>External Service Provider Repair</option>
+        <option>Others, Repair</option>
+      </select>
+      <div class="field-error" id="err-assess-recommendation">Recommendation Type is required.</div>
+    </div>
+
+    <div class="form-group" id="others-group" style="display:none;">
+      <label for="assess-others">Specify "Others" <span style="color:#c0392b">*</span></label>
+      <textarea id="assess-others" placeholder="Describe the specific repair or service needed..."></textarea>
+      <div class="field-error" id="err-assess-others">Please specify the Others description.</div>
+    </div>
+
+    <div class="form-group">
+      <label for="assess-target-date">Target Date of Completion</label>
+      <input type="date" id="assess-target-date">
+    </div>
+
+    <div class="form-group">
+      <label for="assess-text">Assessment <span style="color:#c0392b">*</span></label>
+      <textarea id="assess-text" placeholder="Describe the technical assessment of the issue..."></textarea>
+      <div class="field-error" id="err-assess-text">Assessment is required.</div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-cancel" onclick="closeAssessModal()">Cancel</button>
+      <button class="btn btn-submit-assess" onclick="submitAssess()">&#10148; Send for Director Approval</button>
+    </div>
+  </div>
+</div>
+
+<!-- Complete Modal (In Progress → Completed) -->
+<div class="modal-overlay" id="complete-overlay">
+  <div class="modal">
+    <h2>Mark Ticket as Completed</h2>
+    <p class="modal-jrf" id="complete-jrf-label"></p>
+
+    <div class="form-group">
+      <label>Task Result <span style="color:#c0392b">*</span></label>
+      <div class="radio-group">
+        <label><input type="radio" name="complete-task-result" value="Successful"> Successful</label>
+        <label><input type="radio" name="complete-task-result" value="Failed"> Failed</label>
+      </div>
+      <div class="field-error" id="err-task-result">Task Result is required.</div>
+    </div>
+
+    <div class="form-group">
+      <label for="complete-action">Action Taken <span style="color:#c0392b">*</span></label>
+      <textarea id="complete-action" placeholder="Describe the steps taken to resolve the issue..."></textarea>
+      <div class="field-error" id="err-action">Action Taken is required.</div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-cancel" onclick="closeCompleteModal()">Cancel</button>
+      <button class="btn btn-submit-complete" onclick="submitComplete()">&#10003; Mark as Completed</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
-  let allTickets  = [];
+  let allTickets   = [];
   let activeFilter = 'all';
+  let assessJrfNo  = null;
+  let completeJrfNo = null;
+
+  // ── Status helpers ──────────────────────────────────────────────────────────
+
+  function badgeClass(status) {
+    switch (status) {
+      case 'Pending Supervisor Approval': return 'badge-supervisor';
+      case 'Pending IT Assessment':       return 'badge-assessment';
+      case 'Pending Director Approval':   return 'badge-director';
+      case 'In Progress':                 return 'badge-inprogress';
+      case 'Completed':                   return 'badge-completed';
+      case 'Rejected':                    return 'badge-rejected';
+      default:                            return 'badge-supervisor';
+    }
+  }
+
+  // ── Load & render ───────────────────────────────────────────────────────────
 
   function loadTickets() {
     document.getElementById('loading').style.display = 'block';
@@ -232,8 +485,10 @@
       .withSuccessHandler(function(tickets) {
         allTickets = tickets;
         updateStats(tickets);
-        renderTable(tickets);
+        renderTable(getFiltered());
         document.getElementById('loading').style.display = 'none';
+        document.getElementById('last-updated').textContent =
+          'Last updated: ' + new Date().toLocaleTimeString();
       })
       .withFailureHandler(function(err) {
         document.getElementById('loading').textContent = 'Error loading tickets: ' + err.message;
@@ -241,22 +496,27 @@
       .getTickets();
   }
 
+  // Auto-refresh every 60 seconds to pick up approval status changes
+  setInterval(loadTickets, 60000);
+
   function updateStats(tickets) {
-    const pending   = tickets.filter(t => t.status !== 'Completed').length;
+    const active    = tickets.filter(t => t.status !== 'Completed' && t.status !== 'Rejected').length;
     const completed = tickets.filter(t => t.status === 'Completed').length;
     document.getElementById('count-all').textContent       = tickets.length;
-    document.getElementById('count-pending').textContent   = pending;
+    document.getElementById('count-active').textContent    = active;
     document.getElementById('count-completed').textContent = completed;
+  }
+
+  function getFiltered() {
+    if (activeFilter === 'all') return allTickets;
+    return allTickets.filter(t => t.status === activeFilter);
   }
 
   function setFilter(filter, btn) {
     activeFilter = filter;
     document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    const filtered = filter === 'all'
-      ? allTickets
-      : allTickets.filter(t => t.status === filter);
-    renderTable(filtered);
+    renderTable(getFiltered());
   }
 
   function renderTable(tickets) {
@@ -273,23 +533,42 @@
     }
 
     tickets.slice().reverse().forEach(function(t) {
-      const isDone = t.status === 'Completed';
       const row = document.createElement('tr');
       row.id = 'row-' + t.jrfNo;
+
+      // Action buttons differ by status
+      let actionHtml = '';
+      switch (t.status) {
+        case 'Pending Supervisor Approval':
+        case 'Pending Director Approval':
+          actionHtml = '<span class="btn btn-waiting">Awaiting approval…</span>';
+          break;
+        case 'Pending IT Assessment':
+          actionHtml = '<button class="btn btn-assess" onclick="openAssessModal(\'' + esc(t.jrfNo) + '\')">&#128196; Assess</button>';
+          break;
+        case 'In Progress':
+          actionHtml = '<button class="btn btn-complete" onclick="openCompleteModal(\'' + esc(t.jrfNo) + '\')">&#10003; Complete</button>';
+          break;
+        case 'Completed':
+          actionHtml = '<button class="btn btn-pdf" onclick="downloadPdf(\'' + esc(t.jrfNo) + '\')">&#8595; PDF</button>';
+          break;
+        default:
+          actionHtml = '';
+      }
+
+      const editBtn = '<button class="btn btn-edit" onclick="openEditModal(\'' + esc(t.jrfNo) + '\')">&#9998; Edit</button>';
+
       row.innerHTML =
         '<td><strong>' + esc(t.jrfNo) + '</strong></td>' +
         '<td>' + esc(t.date) + '</td>' +
         '<td>' + esc(t.name) + '</td>' +
         '<td>' + esc(t.position) + '</td>' +
-        '<td class="td-problem" title="' + esc(t.problem) + '">' + esc(t.problem) + '</td>' +
+        '<td class="td-problem">' + esc(t.problem) + '</td>' +
         '<td>' + esc(t.recType) + '</td>' +
-        '<td><span class="badge ' + (isDone ? 'badge-completed' : 'badge-pending') + '">' + esc(t.status) + '</span></td>' +
-        '<td><div class="actions">' +
-          '<button class="btn ' + (isDone ? 'btn-disabled' : 'btn-complete') + '" ' +
-            (isDone ? 'disabled' : 'onclick="markComplete(\'' + esc(t.jrfNo) + '\')"') +
-            '>&#10003; Complete</button>' +
-          '<button class="btn btn-pdf" onclick="downloadPdf(\'' + esc(t.jrfNo) + '\')">&#8595; PDF</button>' +
-        '</div></td>';
+        '<td>' + esc(t.assignedStaff || '—') + '</td>' +
+        '<td><span class="badge ' + badgeClass(t.status) + '">' + esc(t.status) + '</span></td>' +
+        '<td><div class="actions">' + editBtn + actionHtml + '</div></td>';
+
       tbody.appendChild(row);
     });
 
@@ -297,39 +576,180 @@
     empty.style.display = 'none';
   }
 
-  function markComplete(jrfNo) {
-    showToast('Updating ticket ' + jrfNo + '...');
+  // ── Assess Modal ────────────────────────────────────────────────────────────
+
+  function openAssessModal(jrfNo) {
+    assessJrfNo = jrfNo;
+    const t = allTickets.find(x => x.jrfNo === jrfNo);
+
+    document.getElementById('assess-jrf-label').textContent = 'Ticket: ' + jrfNo;
+    document.getElementById('assess-staff').value          = (t && t.assignedStaff)     || '';
+    document.getElementById('assess-recommendation').value = (t && t.recType)           || '';
+    document.getElementById('assess-target-date').value    = (t && t.targetDate)        || '';
+    document.getElementById('assess-text').value           = (t && t.assessment)        || '';
+    document.getElementById('assess-others').value         = (t && t.othersDescription) || '';
+    document.getElementById('err-assess-recommendation').style.display = 'none';
+    document.getElementById('err-assess-text').style.display           = 'none';
+    document.getElementById('err-assess-others').style.display         = 'none';
+    toggleOthersField(document.getElementById('assess-recommendation').value);
+
+    document.getElementById('assess-overlay').classList.add('open');
+    document.getElementById('assess-text').focus();
+  }
+
+  function toggleOthersField(val) {
+    document.getElementById('others-group').style.display = val === 'Others, Repair' ? 'block' : 'none';
+  }
+
+  document.getElementById('assess-recommendation').addEventListener('change', function() {
+    toggleOthersField(this.value);
+  });
+
+  function closeAssessModal() {
+    document.getElementById('assess-overlay').classList.remove('open');
+    assessJrfNo = null;
+  }
+
+  function submitAssess() {
+    const assessment     = document.getElementById('assess-text').value.trim();
+    const recommendation = document.getElementById('assess-recommendation').value;
+    const assignedStaff  = document.getElementById('assess-staff').value;
+    const targetDate     = document.getElementById('assess-target-date').value;
+    const othersDesc     = document.getElementById('assess-others').value.trim();
+
+    let valid = true;
+    if (!recommendation) {
+      document.getElementById('err-assess-recommendation').style.display = 'block';
+      valid = false;
+    } else {
+      document.getElementById('err-assess-recommendation').style.display = 'none';
+    }
+    if (recommendation === 'Others, Repair' && !othersDesc) {
+      document.getElementById('err-assess-others').style.display = 'block';
+      valid = false;
+    } else {
+      document.getElementById('err-assess-others').style.display = 'none';
+    }
+    if (!assessment) {
+      document.getElementById('err-assess-text').style.display = 'block';
+      valid = false;
+    } else {
+      document.getElementById('err-assess-text').style.display = 'none';
+    }
+    if (!valid) return;
+
+    const jrfNo = assessJrfNo;
+    closeAssessModal();
+    showToast('Submitting assessment for ' + jrfNo + '…');
+
     google.script.run
-      .withSuccessHandler(function(ok) {
-        if (ok) {
+      .withSuccessHandler(function(result) {
+        if (result && result.ok) {
           const t = allTickets.find(x => x.jrfNo === jrfNo);
-          if (t) t.status = 'Completed';
+          if (t) {
+            t.status           = 'Pending Director Approval';
+            t.recType          = recommendation;
+            t.assignedStaff    = assignedStaff;
+            t.assessment       = assessment;
+            t.targetDate       = targetDate;
+            t.othersDescription = othersDesc;
+          }
           updateStats(allTickets);
-          const filtered = activeFilter === 'all' ? allTickets : allTickets.filter(x => x.status === activeFilter);
-          renderTable(filtered);
-          showToast('Ticket ' + jrfNo + ' marked as Completed.');
+          renderTable(getFiltered());
+          showToast('Assessment submitted. Director approval email sent for ' + jrfNo + '.');
         } else {
-          showToast('Could not update ticket. Please try again.');
+          showToast('Error: ' + (result && result.error ? result.error : 'Could not submit assessment.'));
         }
       })
       .withFailureHandler(function(err) {
         showToast('Error: ' + err.message);
       })
-      .updateTicketStatus(jrfNo);
+      .submitAssessment(jrfNo, assignedStaff, recommendation, assessment, targetDate, othersDesc);
   }
 
+  // ── Complete Modal ──────────────────────────────────────────────────────────
+
+  function openCompleteModal(jrfNo) {
+    completeJrfNo = jrfNo;
+    const t = allTickets.find(x => x.jrfNo === jrfNo);
+
+    document.getElementById('complete-jrf-label').textContent = 'Ticket: ' + jrfNo;
+    document.getElementById('complete-action').value = (t && t.actionTaken) || '';
+    document.querySelectorAll('input[name="complete-task-result"]').forEach(function(r) {
+      r.checked = t && r.value === t.taskResult;
+    });
+    document.getElementById('err-task-result').style.display = 'none';
+    document.getElementById('err-action').style.display      = 'none';
+
+    document.getElementById('complete-overlay').classList.add('open');
+    document.getElementById('complete-action').focus();
+  }
+
+  function closeCompleteModal() {
+    document.getElementById('complete-overlay').classList.remove('open');
+    completeJrfNo = null;
+  }
+
+  function submitComplete() {
+    const actionTaken  = document.getElementById('complete-action').value.trim();
+    const taskResultEl = document.querySelector('input[name="complete-task-result"]:checked');
+    const taskResult   = taskResultEl ? taskResultEl.value : '';
+
+    let valid = true;
+    if (!taskResult) {
+      document.getElementById('err-task-result').style.display = 'block';
+      valid = false;
+    } else {
+      document.getElementById('err-task-result').style.display = 'none';
+    }
+    if (!actionTaken) {
+      document.getElementById('err-action').style.display = 'block';
+      valid = false;
+    } else {
+      document.getElementById('err-action').style.display = 'none';
+    }
+    if (!valid) return;
+
+    const jrfNo = completeJrfNo;
+    closeCompleteModal();
+    showToast('Marking ' + jrfNo + ' as Completed…');
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (result && result.ok) {
+          const t = allTickets.find(x => x.jrfNo === jrfNo);
+          if (t) {
+            t.status      = 'Completed';
+            t.actionTaken = actionTaken;
+            t.taskResult  = taskResult;
+          }
+          updateStats(allTickets);
+          renderTable(getFiltered());
+          showToast('Ticket ' + jrfNo + ' marked as Completed.');
+        } else {
+          showToast('Error: ' + (result && result.error ? result.error : 'Could not update ticket.'));
+        }
+      })
+      .withFailureHandler(function(err) {
+        showToast('Error: ' + err.message);
+      })
+      .updateTicketStatus(jrfNo, actionTaken, taskResult);
+  }
+
+  // ── PDF ─────────────────────────────────────────────────────────────────────
+
   function downloadPdf(jrfNo) {
-    showToast('Generating PDF for ' + jrfNo + '...');
+    showToast('Generating PDF for ' + jrfNo + '…');
     google.script.run
       .withSuccessHandler(function(base64) {
-        const bytes    = atob(base64);
-        const arr      = new Uint8Array(bytes.length);
+        const bytes = atob(base64);
+        const arr   = new Uint8Array(bytes.length);
         for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
-        const blob     = new Blob([arr], { type: 'application/pdf' });
-        const url      = URL.createObjectURL(blob);
-        const a        = document.createElement('a');
-        a.href         = url;
-        a.download     = 'ITJRF-' + jrfNo + '.pdf';
+        const blob = new Blob([arr], { type: 'application/pdf' });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href     = url;
+        a.download = 'ITJRF-' + jrfNo + '.pdf';
         a.click();
         URL.revokeObjectURL(url);
         showToast('PDF downloaded for ' + jrfNo + '.');
@@ -339,6 +759,8 @@
       })
       .generateFormPdf(jrfNo);
   }
+
+  // ── Utilities ───────────────────────────────────────────────────────────────
 
   function showToast(msg) {
     const t = document.getElementById('toast');
@@ -355,6 +777,79 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
   }
+
+  // ── Edit Modal ───────────────────────────────────────────────────────────────
+
+  let editJrfNo = null;
+
+  function openEditModal(jrfNo) {
+    editJrfNo = jrfNo;
+    const t = allTickets.find(x => x.jrfNo === jrfNo);
+
+    document.getElementById('edit-jrf-label').textContent = 'Ticket: ' + jrfNo;
+    document.getElementById('edit-name').value       = (t && t.name)       || '';
+    document.getElementById('edit-position').value   = (t && t.position)   || '';
+    document.getElementById('edit-supervisor').value = (t && t.supervisor) || '';
+    document.getElementById('edit-problem').value    = (t && t.problem)    || '';
+    document.getElementById('err-edit-name').style.display = 'none';
+
+    document.getElementById('edit-overlay').classList.add('open');
+    document.getElementById('edit-name').focus();
+  }
+
+  function closeEditModal() {
+    document.getElementById('edit-overlay').classList.remove('open');
+    editJrfNo = null;
+  }
+
+  function submitEdit() {
+    const name       = document.getElementById('edit-name').value.trim();
+    const position   = document.getElementById('edit-position').value.trim();
+    const supervisor = document.getElementById('edit-supervisor').value.trim();
+    const problem    = document.getElementById('edit-problem').value.trim();
+
+    if (!name) {
+      document.getElementById('err-edit-name').style.display = 'block';
+      return;
+    }
+    document.getElementById('err-edit-name').style.display = 'none';
+
+    const jrfNo = editJrfNo;
+    closeEditModal();
+    showToast('Saving changes for ' + jrfNo + '…');
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (result && result.ok) {
+          const t = allTickets.find(x => x.jrfNo === jrfNo);
+          if (t) {
+            t.name       = name;
+            t.position   = position;
+            t.supervisor = supervisor;
+            t.problem    = problem;
+          }
+          renderTable(getFiltered());
+          showToast('Ticket ' + jrfNo + ' details updated.');
+        } else {
+          showToast('Error: ' + (result && result.error ? result.error : 'Could not update ticket.'));
+        }
+      })
+      .withFailureHandler(function(err) {
+        showToast('Error: ' + err.message);
+      })
+      .updateTicketDetails(jrfNo, name, position, supervisor, problem);
+  }
+
+  // Close modals on overlay click
+  document.getElementById('edit-overlay').addEventListener('click', function(e) {
+    if (e.target === this) closeEditModal();
+  });
+  document.getElementById('assess-overlay').addEventListener('click', function(e) {
+    if (e.target === this) closeAssessModal();
+  });
+  document.getElementById('complete-overlay').addEventListener('click', function(e) {
+    if (e.target === this) closeCompleteModal();
+  });
 
   window.addEventListener('load', loadTickets);
 </script>
