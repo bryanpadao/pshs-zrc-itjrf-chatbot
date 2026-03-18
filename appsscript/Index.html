@@ -3,125 +3,251 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Prevent iOS from auto-linking phone numbers, addresses, dates in chat bubbles -->
+  <meta name="format-detection" content="telephone=no, date=no, address=no, email=no, url=no">
   <title>PSHS ZRC IT Support Chatbot</title>
+  <link rel="icon" type="image/png" href="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w64">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
-    body {
-      font-family: 'Segoe UI', Arial, sans-serif;
-      background: #f0f2f5;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      min-height: 100vh;
+    html, body {
+      height: 100%;
     }
 
+    body {
+      font-family: -apple-system, 'Segoe UI', Arial, sans-serif;
+      background: #1a3c6e;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100%;
+    }
+
+    /* Full-viewport background */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background: url('https://drive.google.com/thumbnail?id=1kz4OlKY9jpt_qWtP8aC1BrjLXBhiWcmb&sz=w1920') center/cover no-repeat;
+    }
+
+    /* ── Chat container — mobile first ─────────────────────────────────────── */
+
+    /* On mobile: use fixed positioning to guarantee true full-screen coverage
+       regardless of any iframe or parent container constraints from Apps Script */
     .chat-container {
-      width: 100%;
-      max-width: 480px;
-      height: 90vh;
-      background: #fff;
-      border-radius: 12px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+      position: fixed;
+      inset: 0;
+      background: #f2f2f7;   /* iOS system background */
       display: flex;
       flex-direction: column;
       overflow: hidden;
     }
 
+    /* On wide screens: float as a centered card */
+    @media (min-width: 900px) {
+      body {
+        align-items: center;
+        padding: 24px 0;
+      }
+      .chat-container {
+        position: relative;
+        inset: auto;
+        width: 560px;
+        height: calc(100dvh - 48px);
+        border-radius: 14px;
+        box-shadow: 0 6px 32px rgba(0,0,0,0.28);
+      }
+    }
+
+    /* ── Header — messaging app contact style ────────────────────────────── */
+
     .chat-header {
-      background: #1a3c6e;
-      color: #fff;
-      padding: 16px 20px;
+      background: #fff;
+      border-bottom: 1px solid #d1d1d6;
+      padding: 10px 16px 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    /* Circular avatar */
+    .header-avatar {
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      overflow: hidden;
+      background: #fff;
+      flex-shrink: 0;
       display: flex;
       align-items: center;
-      gap: 12px;
+      justify-content: center;
+      border: 2px solid #f5b800;               /* gold ring */
+      box-shadow: 0 0 0 2px #1a3c6e;           /* outer blue ring */
     }
 
-    .chat-header img {
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      background: #fff;
+    .header-avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
     }
 
-    .chat-header .info h2 { font-size: 16px; }
-    .chat-header .info p  { font-size: 12px; opacity: 0.8; }
+    .header-name {
+      font-size: 16px;
+      font-weight: 600;
+      color: #1a1a1a;
+      letter-spacing: -0.2px;
+    }
+
+    .header-status {
+      font-size: 11px;
+      color: #8e8e93;
+    }
+
+    /* ── Messages area ───────────────────────────────────────────────────── */
 
     .chat-messages {
       flex: 1;
-      padding: 16px;
+      padding: 12px 12px 8px;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
       gap: 10px;
+      -webkit-overflow-scrolling: touch;
+      background: #f2f2f7;
     }
 
+    /* Row wrapper — used for bot messages to place avatar + bubble side by side */
+    .msg-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 6px;
+    }
+
+    .msg-row.bot-row { align-self: flex-start; max-width: 84%; }
+
+    /* Small circular bot avatar beside each bot bubble */
+    .bot-avatar {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      overflow: hidden;
+      flex-shrink: 0;
+      background: #fff;
+      border: 1.5px solid #f5b800;             /* gold ring */
+      box-shadow: 0 0 0 1.5px #1a3c6e;         /* outer blue ring */
+    }
+
+    .bot-avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    /* Bubble base */
     .message {
-      max-width: 78%;
       padding: 10px 14px;
       border-radius: 18px;
-      font-size: 14px;
+      font-size: 15px;
       line-height: 1.5;
       white-space: pre-wrap;
-      word-wrap: break-word;
+      overflow-wrap: break-word; /* only break truly unbreakable long strings */
+      word-break: normal;        /* do NOT split normal words mid-character */
     }
 
+    /* Bot bubble — white with bottom-left tail */
     .message.bot {
-      background: #e8edf5;
-      color: #1a1a1a;
-      align-self: flex-start;
+      background: #fff;
+      color: #1a1a1a !important;
       border-bottom-left-radius: 4px;
     }
 
+    /* Prevent browser auto-link detection from coloring bot text blue */
+    .message.bot a,
+    .message.bot * {
+      color: #1a1a1a !important;
+      text-decoration: none !important;
+      pointer-events: none;
+    }
+
+    /* User bubble — PSHS blue with bottom-right tail */
     .message.user {
       background: #1a3c6e;
       color: #fff;
       align-self: flex-end;
       border-bottom-right-radius: 4px;
+      max-width: 84%;
     }
+
+    /* Prevent browser auto-link detection from coloring user text */
+    .message.user a {
+      color: #fff;
+      text-decoration: none;
+      pointer-events: none;
+    }
+
+    /* ── Input bar — iMessage style ──────────────────────────────────────── */
 
     .chat-input {
       display: flex;
-      padding: 12px 16px;
-      border-top: 1px solid #e0e0e0;
-      gap: 8px;
+      align-items: flex-end;
+      padding: 10px 12px;
+      padding-bottom: max(10px, env(safe-area-inset-bottom));
       background: #fff;
+      border-top: 1px solid #d1d1d6;
+      gap: 8px;
+      flex-shrink: 0;
     }
 
     .chat-input textarea {
       flex: 1;
       resize: none;
-      border: 1px solid #ccc;
+      border: 1px solid #d1d1d6;
       border-radius: 20px;
       padding: 10px 16px;
-      font-size: 14px;
+      font-size: 16px;    /* 16px prevents iOS auto-zoom on focus */
       font-family: inherit;
       outline: none;
-      max-height: 100px;
-      overflow-y: auto;
+      min-height: 40px;
+      max-height: 120px;
+      overflow-y: hidden;  /* hidden by default; JS enables scroll only when content exceeds max-height */
+      line-height: 1.4;
+      background: #f2f2f7;
+      color: #1a1a1a;
+      transition: border-color 0.15s;
     }
 
-    .chat-input textarea:focus { border-color: #1a3c6e; }
+    .chat-input textarea:focus {
+      border-color: #1a3c6e;
+      background: #fff;
+    }
 
+    /* Send button — circle, hides until textarea has content */
     .chat-input button {
       background: #1a3c6e;
       color: #fff;
       border: none;
       border-radius: 50%;
-      width: 42px;
-      height: 42px;
+      width: 36px;
+      height: 36px;
       cursor: pointer;
-      font-size: 18px;
+      font-size: 16px;
       display: flex;
       align-items: center;
       justify-content: center;
       flex-shrink: 0;
-      transition: background 0.2s;
+      transition: background 0.15s, transform 0.1s;
+      touch-action: manipulation;
+      margin-bottom: 2px; /* align with textarea baseline */
     }
 
     .chat-input button:hover  { background: #255090; }
-    .chat-input button:active { background: #0f2550; }
+    .chat-input button:active { transform: scale(0.92); background: #0f2550; }
 
+    /* Locked state */
     .chat-input.locked textarea {
       background: #f5f5f5;
       color: #aaa;
@@ -129,17 +255,21 @@
     }
 
     .chat-input.locked button {
-      background: #ccc;
+      background: #c7c7cc;
       cursor: not-allowed;
       pointer-events: none;
     }
 
+    /* ── New chat bar ────────────────────────────────────────────────────── */
+
     .new-chat-bar {
       padding: 12px 16px;
-      border-top: 1px solid #e0e0e0;
+      padding-bottom: max(12px, env(safe-area-inset-bottom));
+      border-top: 1px solid #d1d1d6;
       background: #fff;
       text-align: center;
       display: none;
+      flex-shrink: 0;
     }
 
     .new-chat-bar button {
@@ -147,57 +277,73 @@
       color: #fff;
       border: none;
       border-radius: 20px;
-      padding: 10px 28px;
+      padding: 11px 28px;
       font-size: 14px;
       font-family: inherit;
       cursor: pointer;
       transition: background 0.2s;
+      touch-action: manipulation;
     }
 
     .new-chat-bar button:hover { background: #255090; }
 
+    /* ── Typing indicator ────────────────────────────────────────────────── */
+
+    /* Wrap typing in a row so it aligns with bot messages */
+    .typing-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 6px;
+      align-self: flex-start;
+    }
+
     .typing {
       display: flex;
       gap: 4px;
-      padding: 10px 14px;
-      background: #e8edf5;
+      padding: 12px 14px;
+      background: #fff;
       border-radius: 18px;
       border-bottom-left-radius: 4px;
-      align-self: flex-start;
       width: fit-content;
     }
+
     .typing span {
-      width: 8px; height: 8px;
-      background: #888;
+      width: 7px; height: 7px;
+      background: #8e8e93;
       border-radius: 50%;
       animation: bounce 1.2s infinite;
     }
+
     .typing span:nth-child(2) { animation-delay: 0.2s; }
     .typing span:nth-child(3) { animation-delay: 0.4s; }
+
     @keyframes bounce {
       0%, 80%, 100% { transform: translateY(0); }
-      40%           { transform: translateY(-6px); }
+      40%           { transform: translateY(-5px); }
     }
   </style>
 </head>
 <body>
   <div class="chat-container">
+
+    <!-- Header styled like a messaging app contact header -->
     <div class="chat-header">
-      <div class="info">
-        <h2>PSHS ZRC IT Support</h2>
-        <p>IT Job Request Form Chatbot</p>
+      <div class="header-avatar">
+        <img src="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w200" alt="PSHS ZRC Logo">
       </div>
+      <div class="header-name">PSHS ZRC IT Support</div>
+      <div class="header-status">IT Job Request Form Chatbot</div>
     </div>
 
     <div class="chat-messages" id="messages"></div>
 
     <div class="chat-input" id="chat-input">
-      <textarea id="input" placeholder="Type a message..." rows="1"></textarea>
-      <button id="sendBtn">&#9658;</button>
+      <textarea id="input" placeholder="Message" rows="1"></textarea>
+      <button id="sendBtn">&#9650;</button>
     </div>
 
     <div class="new-chat-bar" id="new-chat-bar">
-      <button onclick="location.reload()">&#8635; Start a New Conversation</button>
+      <button onclick="resetChat()">&#8635; Start a New Conversation</button>
     </div>
   </div>
 
@@ -208,7 +354,9 @@
     const chatInputEl = document.getElementById('chat-input');
     const newChatBar  = document.getElementById('new-chat-bar');
 
-    let session = {};
+    const BOT_AVATAR_URL = 'https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w200';
+
+    let sessionId = ''; // server-side session key
 
     function lockChat() {
       chatInputEl.classList.add('locked');
@@ -218,20 +366,52 @@
       newChatBar.style.display = 'block';
     }
 
+    /* Adds a message bubble. Bot messages get a small avatar beside them. */
     function addMessage(text, type) {
-      const div = document.createElement('div');
-      div.className = 'message ' + type;
-      div.textContent = text;
-      messagesEl.appendChild(div);
+      if (type === 'bot') {
+        // Row wrapper with avatar + bubble (messaging app style)
+        const row = document.createElement('div');
+        row.className = 'msg-row bot-row';
+
+        const avatar = document.createElement('div');
+        avatar.className = 'bot-avatar';
+        avatar.innerHTML = '<img src="' + BOT_AVATAR_URL + '" alt="bot">';
+
+        const bubble = document.createElement('div');
+        bubble.className = 'message bot';
+        bubble.textContent = text;
+
+        row.appendChild(avatar);
+        row.appendChild(bubble);
+        messagesEl.appendChild(row);
+      } else {
+        // User bubbles: no wrapper needed — appended directly so max-width: 84%
+        // calculates against the full chat width, not a shrink-to-fit row
+        const bubble = document.createElement('div');
+        bubble.className = 'message user';
+        bubble.textContent = text;
+        messagesEl.appendChild(bubble);
+      }
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
+    /* Typing indicator also uses the bot-row layout for visual consistency */
     function showTyping() {
-      const div = document.createElement('div');
-      div.className = 'typing';
-      div.id = 'typing-indicator';
-      div.innerHTML = '<span></span><span></span><span></span>';
-      messagesEl.appendChild(div);
+      const row = document.createElement('div');
+      row.className = 'typing-row';
+      row.id = 'typing-indicator';
+
+      const avatar = document.createElement('div');
+      avatar.className = 'bot-avatar';
+      avatar.innerHTML = '<img src="' + BOT_AVATAR_URL + '" alt="bot">';
+
+      const dots = document.createElement('div');
+      dots.className = 'typing';
+      dots.innerHTML = '<span></span><span></span><span></span>';
+
+      row.appendChild(avatar);
+      row.appendChild(dots);
+      messagesEl.appendChild(row);
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
@@ -252,7 +432,7 @@
       google.script.run
         .withSuccessHandler(function(response) {
           hideTyping();
-          session = response.session;
+          sessionId = response.sessionId || sessionId;
           if (response.replies && response.replies.length > 1) {
             response.replies.forEach(function(r) { if (r) addMessage(r, 'bot'); });
           } else {
@@ -265,7 +445,7 @@
           addMessage('Sorry, something went wrong. Please try again.', 'bot');
           console.error(err);
         })
-        .processChat({ message: text, session: session });
+        .processChat({ message: text, sessionId: sessionId });
     }
 
     sendBtn.addEventListener('click', sendMessage);
@@ -279,12 +459,28 @@
 
     inputEl.addEventListener('input', function() {
       this.style.height = 'auto';
-      this.style.height = Math.min(this.scrollHeight, 100) + 'px';
+      const newH = Math.min(this.scrollHeight, 120);
+      this.style.height = newH + 'px';
+      // Only show scroll when content exceeds max-height
+      this.style.overflowY = this.scrollHeight > 120 ? 'auto' : 'hidden';
     });
+
+    const GREETING = 'Hello! I\'m the PSHS ZRC IT Support Chatbot. I can help you troubleshoot issues or submit an IT Job Request Form. How can I help you today?';
+
+    function resetChat() {
+      sessionId = '';
+      messagesEl.innerHTML = '';
+      chatInputEl.classList.remove('locked');
+      inputEl.disabled = false;
+      inputEl.placeholder = 'Message';
+      chatInputEl.style.display = '';
+      newChatBar.style.display = 'none';
+      addMessage(GREETING, 'bot');
+    }
 
     // Greeting on load
     window.addEventListener('load', function() {
-      addMessage('Hello! I\'m the PSHS ZRC IT Support Chatbot. I can help you troubleshoot issues or submit an IT Job Request Form. How can I help you today?', 'bot');
+      addMessage(GREETING, 'bot');
     });
   </script>
 </body>

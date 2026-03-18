@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PSHS ZRC IT Dashboard</title>
+  <link rel="icon" type="image/png" href="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w64">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -70,6 +71,19 @@
     .filter-btn:hover {
       background: #1a3c6e;
       color: #fff;
+    }
+
+    /* Reports button — always filled, visually distinct */
+    .filter-btn.btn-reports {
+      background: #1a3c6e;
+      color: #fff;
+      border-color: #1a3c6e;
+    }
+
+    .filter-btn.btn-reports:hover,
+    .filter-btn.btn-reports.active {
+      background: #255090;
+      border-color: #255090;
     }
 
     .table-wrap {
@@ -264,23 +278,176 @@
     .btn-submit-assess   { background: #0c5460; color: #fff; padding: 7px 20px; }
     .btn-submit-complete { background: #1a3c6e; color: #fff; padding: 7px 20px; }
 
+    /* ── Reports panel ──────────────────────────────────────────────────────── */
+
+    .reports-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    .report-section {
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      padding: 24px 28px;
+    }
+
+    .report-section h2 {
+      font-size: 15px;
+      color: #1a3c6e;
+      margin-bottom: 16px;
+      font-weight: 600;
+      border-bottom: 2px solid #e8edf5;
+      padding-bottom: 10px;
+    }
+
+    .report-controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .report-controls select {
+      padding: 6px 10px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: inherit;
+      color: #333;
+      cursor: pointer;
+    }
+
+    .report-controls select:focus {
+      outline: 2px solid #1a3c6e;
+      border-color: transparent;
+    }
+
+    .btn-export {
+      padding: 6px 16px;
+      background: #e8edf5;
+      color: #1a3c6e;
+      border: 1px solid #c5d0e6;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      font-family: inherit;
+      transition: opacity 0.15s;
+    }
+
+    .btn-export:hover { opacity: 0.8; }
+
+    /* Overdue count line */
+    .overdue-count {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    .overdue-count.has-overdue { color: #c0392b; }
+    .overdue-count.no-overdue  { color: #0a3622; }
+
+    /* Overdue row highlight for 14+ days */
+    tbody tr.overdue-critical { background: #fff0f0; }
+    tbody tr.overdue-critical:hover { background: #ffe4e4; }
+
+    /* Bar chart */
+    .bar-chart {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .bar-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .bar-label {
+      width: 210px;
+      min-width: 160px;
+      font-size: 12px;
+      color: #333;
+      text-align: right;
+      flex-shrink: 0;
+    }
+
+    .bar-track {
+      flex: 1;
+      background: #f0f2f5;
+      border-radius: 4px;
+      height: 22px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      background: #1a3c6e;
+      height: 100%;
+      border-radius: 4px;
+      min-width: 4px;
+      transition: width 0.4s ease;
+    }
+
+    .bar-count {
+      font-size: 12px;
+      font-weight: 600;
+      color: #1a3c6e;
+      min-width: 28px;
+      text-align: left;
+      flex-shrink: 0;
+    }
+
     @media (max-width: 600px) {
       .container { padding: 16px; }
       header { padding: 12px 16px; }
       .modal { padding: 20px 16px; margin: 16px; }
+      .report-section { padding: 16px; }
+      .bar-label { width: 120px; min-width: 90px; font-size: 11px; }
     }
   </style>
 </head>
 <body>
 
-<header>
-  <div>
-    <h1>PSHS ZRC IT Unit — Ticket Dashboard</h1>
-    <p>IT Job Request Form Management</p>
+<!-- ── Login Overlay ─────────────────────────────────────────────────────── -->
+<div id="login-overlay" style="display:none;position:fixed;inset:0;background:#1a3c6e;z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:14px;padding:40px 48px;width:100%;max-width:380px;box-shadow:0 8px 40px rgba(0,0,0,.3);text-align:center;">
+    <img src="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w200" alt="PSHS ZRC Logo" style="height:56px;width:auto;margin-bottom:16px;">
+    <h2 style="color:#1a3c6e;font-size:18px;margin-bottom:4px;">IT Dashboard Login</h2>
+    <p style="font-size:12px;color:#666;margin-bottom:24px;">PSHS ZRC IT Unit — Authorized Staff Only</p>
+    <input id="login-email" type="email" placeholder="IT Staff Email"
+      style="width:100%;padding:10px 14px;border:1px solid #ccc;border-radius:8px;font-size:14px;margin-bottom:10px;font-family:inherit;">
+    <input id="login-password" type="password" placeholder="Password"
+      style="width:100%;padding:10px 14px;border:1px solid #ccc;border-radius:8px;font-size:14px;margin-bottom:6px;font-family:inherit;">
+    <div id="login-error" style="color:#c0392b;font-size:13px;min-height:20px;margin-bottom:10px;"></div>
+    <button onclick="submitLogin()"
+      style="width:100%;background:#1a3c6e;color:#fff;border:none;border-radius:8px;padding:12px;font-size:15px;font-family:inherit;cursor:pointer;">
+      Log In
+    </button>
   </div>
-  <div style="text-align:right;">
+</div>
+
+<header>
+  <div style="display:flex;align-items:center;gap:14px;">
+    <img src="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w200" alt="PSHS ZRC Logo" style="height:42px;width:auto;flex-shrink:0;">
+    <div>
+      <h1>PSHS ZRC IT Unit — Ticket Dashboard</h1>
+      <p>IT Job Request Form Management</p>
+    </div>
+  </div>
+  <div style="text-align:right;display:flex;align-items:center;gap:12px;">
+    <div style="text-align:right;">
+      <div id="logged-in-email" style="font-size:11px;opacity:0.8;"></div>
+      <div id="last-updated" style="font-size:11px;opacity:0.6;margin-top:2px;"></div>
+    </div>
     <button class="btn btn-pdf" onclick="loadTickets()" style="font-size:13px;padding:8px 16px;">&#8635; Refresh</button>
-    <div id="last-updated" style="font-size:11px;opacity:0.6;margin-top:4px;"></div>
+    <button onclick="logout()"
+      style="background:rgba(255,255,255,0.15);color:#fff;border:1px solid rgba(255,255,255,0.4);border-radius:8px;padding:8px 14px;font-size:13px;font-family:inherit;cursor:pointer;">
+      Log Out
+    </button>
   </div>
 </header>
 
@@ -308,27 +475,107 @@
     <button class="filter-btn" onclick="setFilter('Pending Director Approval', this)">Pending Director</button>
     <button class="filter-btn" onclick="setFilter('In Progress', this)">In Progress</button>
     <button class="filter-btn" onclick="setFilter('Completed', this)">Completed</button>
+    <button class="filter-btn btn-reports" onclick="showReports(this)">&#9783; Reports</button>
   </div>
 
-  <div class="table-wrap">
-    <div class="loading" id="loading">Loading tickets...</div>
-    <table id="ticket-table" style="display:none;">
-      <thead>
-        <tr>
-          <th>JRF #</th>
-          <th>Date</th>
-          <th>Name</th>
-          <th>Position</th>
-          <th>Problem</th>
-          <th>Recommendation</th>
-          <th>Assigned Staff</th>
-          <th>Status</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="ticket-body"></tbody>
-    </table>
-    <div class="empty" id="empty" style="display:none;">No tickets found.</div>
+  <!-- Ticket table section (hidden when Reports panel is open) -->
+  <div id="table-section">
+    <div class="table-wrap">
+      <div class="loading" id="loading">Loading tickets...</div>
+      <table id="ticket-table" style="display:none;">
+        <thead>
+          <tr>
+            <th>JRF #</th>
+            <th>Date</th>
+            <th>Name</th>
+            <th>Position</th>
+            <th>Problem</th>
+            <th>Recommendation</th>
+            <th>Assigned Staff</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="ticket-body"></tbody>
+      </table>
+      <div class="empty" id="empty" style="display:none;">No tickets found.</div>
+    </div>
+  </div>
+
+  <!-- Reports panel (hidden by default, shown when Reports button is clicked) -->
+  <div id="reports-panel" class="reports-panel" style="display:none;">
+
+    <!-- Report 1: Monthly summary -->
+    <div class="report-section">
+      <h2>Monthly summary</h2>
+      <div class="report-controls">
+        <select id="rpt-year" onchange="renderMonthlySummary()">
+          <option value="all">All years</option>
+        </select>
+        <select id="rpt-month" onchange="renderMonthlySummary()">
+          <option value="all">All months</option>
+          <option value="1">January</option>
+          <option value="2">February</option>
+          <option value="3">March</option>
+          <option value="4">April</option>
+          <option value="5">May</option>
+          <option value="6">June</option>
+          <option value="7">July</option>
+          <option value="8">August</option>
+          <option value="9">September</option>
+          <option value="10">October</option>
+          <option value="11">November</option>
+          <option value="12">December</option>
+        </select>
+        <button class="btn-export" onclick="exportMonthlyCsv()">&#8595; Export CSV</button>
+      </div>
+      <div class="table-wrap">
+        <table id="monthly-table">
+          <thead>
+            <tr>
+              <th>Month</th>
+              <th>Submitted</th>
+              <th>Completed</th>
+              <th>Pending</th>
+              <th>Rejected</th>
+              <th>Avg. Resolution Days</th>
+            </tr>
+          </thead>
+          <tbody id="monthly-body"></tbody>
+        </table>
+        <div class="empty" id="monthly-empty" style="display:none;">No tickets found for selected period.</div>
+      </div>
+    </div>
+
+    <!-- Report 2: Overdue tickets -->
+    <div class="report-section">
+      <h2>Overdue tickets</h2>
+      <div id="overdue-count-line" class="overdue-count"></div>
+      <div class="table-wrap" id="overdue-table-wrap" style="display:none;">
+        <table>
+          <thead>
+            <tr>
+              <th>JRF #</th>
+              <th>Date</th>
+              <th>Name</th>
+              <th>Problem</th>
+              <th>Recommendation</th>
+              <th>Assigned Staff</th>
+              <th>Status</th>
+              <th>Days Open</th>
+            </tr>
+          </thead>
+          <tbody id="overdue-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Report 3: Tickets by recommendation type -->
+    <div class="report-section">
+      <h2>Tickets by recommendation type</h2>
+      <div class="bar-chart" id="bar-chart"></div>
+    </div>
+
   </div>
 
 </div>
@@ -383,6 +630,16 @@
     </div>
 
     <div class="form-group">
+      <label for="assess-service-location">Service Location <span style="color:#c0392b">*</span></label>
+      <select id="assess-service-location">
+        <option value="">— Select location —</option>
+        <option>In-Campus Repair</option>
+        <option>External Service Provider Repair</option>
+      </select>
+      <div class="field-error" id="err-assess-service-location">Service Location is required.</div>
+    </div>
+
+    <div class="form-group">
       <label for="assess-recommendation">Recommendation Type <span style="color:#c0392b">*</span></label>
       <select id="assess-recommendation">
         <option value="">— Select recommendation —</option>
@@ -393,8 +650,6 @@
         <option>Software Development</option>
         <option>Software Modification</option>
         <option>Software Installation</option>
-        <option>In-Campus Repair</option>
-        <option>External Service Provider Repair</option>
         <option>Others, Repair</option>
       </select>
       <div class="field-error" id="err-assess-recommendation">Recommendation Type is required.</div>
@@ -455,10 +710,15 @@
 <div class="toast" id="toast"></div>
 
 <script>
-  let allTickets   = [];
-  let activeFilter = 'all';
-  let assessJrfNo  = null;
+  let allTickets    = [];
+  let activeFilter  = 'all';
+  let assessJrfNo   = null;
   let completeJrfNo = null;
+
+  const MONTH_NAMES = [
+    'January','February','March','April','May','June',
+    'July','August','September','October','November','December'
+  ];
 
   // ── Status helpers ──────────────────────────────────────────────────────────
 
@@ -474,30 +734,109 @@
     }
   }
 
+  // ── Auth ─────────────────────────────────────────────────────────────────────
+
+  // Dashboard session token — persisted in sessionStorage so it survives page refresh
+  // but is cleared when the browser tab is closed.
+  let dashToken = sessionStorage.getItem('dashToken') || '';
+
+  function showLogin() {
+    const overlay = document.getElementById('login-overlay');
+    overlay.style.display = 'flex';
+  }
+
+  function hideLogin() {
+    document.getElementById('login-overlay').style.display = 'none';
+  }
+
+  function submitLogin() {
+    const email    = document.getElementById('login-email').value.trim();
+    const password = document.getElementById('login-password').value;
+    const errEl    = document.getElementById('login-error');
+    errEl.textContent = '';
+
+    if (!email || !password) {
+      errEl.textContent = 'Please enter your email and password.';
+      return;
+    }
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (result && result.ok) {
+          dashToken = result.token;
+          sessionStorage.setItem('dashToken', dashToken);
+          document.getElementById('logged-in-email').textContent = result.email;
+          hideLogin();
+          loadTickets();
+        } else {
+          errEl.textContent = result && result.error ? result.error : 'Login failed.';
+        }
+      })
+      .withFailureHandler(function(err) {
+        errEl.textContent = 'Login error: ' + err.message;
+      })
+      .dashboardLogin(email, password);
+  }
+
+  // Allow Enter key in login fields
+  document.getElementById('login-password').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') submitLogin();
+  });
+
+  function logout() {
+    google.script.run.dashboardLogout(dashToken);
+    dashToken = '';
+    sessionStorage.removeItem('dashToken');
+    document.getElementById('logged-in-email').textContent = '';
+    showLogin();
+  }
+
+  // Called by withFailureHandler when a server function throws 'Session expired'
+  function onServerError(err) {
+    if (err && err.message && err.message.includes('Session expired')) {
+      dashToken = '';
+      sessionStorage.removeItem('dashToken');
+      showLogin();
+    } else {
+      showToast('Error: ' + (err ? err.message : 'Unknown error'));
+    }
+  }
+
   // ── Load & render ───────────────────────────────────────────────────────────
 
   function loadTickets() {
-    document.getElementById('loading').style.display = 'block';
-    document.getElementById('ticket-table').style.display = 'none';
-    document.getElementById('empty').style.display = 'none';
+    if (!dashToken) { showLogin(); return; }
+
+    // Only show loading indicator if the ticket table section is visible
+    const reportsVisible = document.getElementById('reports-panel').style.display !== 'none';
+    if (!reportsVisible) {
+      document.getElementById('loading').style.display = 'block';
+      document.getElementById('ticket-table').style.display = 'none';
+      document.getElementById('empty').style.display = 'none';
+    }
 
     google.script.run
       .withSuccessHandler(function(tickets) {
         allTickets = tickets;
         updateStats(tickets);
-        renderTable(getFiltered());
-        document.getElementById('loading').style.display = 'none';
+
+        const nowReports = document.getElementById('reports-panel').style.display !== 'none';
+        if (nowReports) {
+          renderReports();
+        } else {
+          renderTable(getFiltered());
+          document.getElementById('loading').style.display = 'none';
+        }
+
         document.getElementById('last-updated').textContent =
           'Last updated: ' + new Date().toLocaleTimeString();
       })
-      .withFailureHandler(function(err) {
-        document.getElementById('loading').textContent = 'Error loading tickets: ' + err.message;
-      })
-      .getTickets();
+      .withFailureHandler(onServerError)
+      .getTickets(dashToken);
   }
 
   // Auto-refresh every 60 seconds to pick up approval status changes
-  setInterval(loadTickets, 60000);
+  setInterval(function() { if (dashToken) loadTickets(); }, 60000);
 
   function updateStats(tickets) {
     const active    = tickets.filter(t => t.status !== 'Completed' && t.status !== 'Rejected').length;
@@ -516,6 +855,9 @@
     activeFilter = filter;
     document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    // Show ticket table, hide reports panel
+    document.getElementById('table-section').style.display  = 'block';
+    document.getElementById('reports-panel').style.display  = 'none';
     renderTable(getFiltered());
   }
 
@@ -582,15 +924,17 @@
     assessJrfNo = jrfNo;
     const t = allTickets.find(x => x.jrfNo === jrfNo);
 
-    document.getElementById('assess-jrf-label').textContent = 'Ticket: ' + jrfNo;
-    document.getElementById('assess-staff').value          = (t && t.assignedStaff)     || '';
-    document.getElementById('assess-recommendation').value = (t && t.recType)           || '';
-    document.getElementById('assess-target-date').value    = (t && t.targetDate)        || '';
-    document.getElementById('assess-text').value           = (t && t.assessment)        || '';
-    document.getElementById('assess-others').value         = (t && t.othersDescription) || '';
-    document.getElementById('err-assess-recommendation').style.display = 'none';
-    document.getElementById('err-assess-text').style.display           = 'none';
-    document.getElementById('err-assess-others').style.display         = 'none';
+    document.getElementById('assess-jrf-label').textContent        = 'Ticket: ' + jrfNo;
+    document.getElementById('assess-staff').value                  = (t && t.assignedStaff)     || '';
+    document.getElementById('assess-service-location').value       = (t && t.serviceLocation)   || '';
+    document.getElementById('assess-recommendation').value         = (t && t.recType)           || '';
+    document.getElementById('assess-target-date').value            = (t && t.targetDate)        || '';
+    document.getElementById('assess-text').value                   = (t && t.assessment)        || '';
+    document.getElementById('assess-others').value                 = (t && t.othersDescription) || '';
+    document.getElementById('err-assess-service-location').style.display = 'none';
+    document.getElementById('err-assess-recommendation').style.display   = 'none';
+    document.getElementById('err-assess-text').style.display             = 'none';
+    document.getElementById('err-assess-others').style.display           = 'none';
     toggleOthersField(document.getElementById('assess-recommendation').value);
 
     document.getElementById('assess-overlay').classList.add('open');
@@ -611,13 +955,20 @@
   }
 
   function submitAssess() {
-    const assessment     = document.getElementById('assess-text').value.trim();
-    const recommendation = document.getElementById('assess-recommendation').value;
-    const assignedStaff  = document.getElementById('assess-staff').value;
-    const targetDate     = document.getElementById('assess-target-date').value;
-    const othersDesc     = document.getElementById('assess-others').value.trim();
+    const assessment      = document.getElementById('assess-text').value.trim();
+    const serviceLocation = document.getElementById('assess-service-location').value;
+    const recommendation  = document.getElementById('assess-recommendation').value;
+    const assignedStaff   = document.getElementById('assess-staff').value;
+    const targetDate      = document.getElementById('assess-target-date').value;
+    const othersDesc      = document.getElementById('assess-others').value.trim();
 
     let valid = true;
+    if (!serviceLocation) {
+      document.getElementById('err-assess-service-location').style.display = 'block';
+      valid = false;
+    } else {
+      document.getElementById('err-assess-service-location').style.display = 'none';
+    }
     if (!recommendation) {
       document.getElementById('err-assess-recommendation').style.display = 'block';
       valid = false;
@@ -647,11 +998,12 @@
         if (result && result.ok) {
           const t = allTickets.find(x => x.jrfNo === jrfNo);
           if (t) {
-            t.status           = 'Pending Director Approval';
-            t.recType          = recommendation;
-            t.assignedStaff    = assignedStaff;
-            t.assessment       = assessment;
-            t.targetDate       = targetDate;
+            t.status            = 'Pending Director Approval';
+            t.serviceLocation   = serviceLocation;
+            t.recType           = recommendation;
+            t.assignedStaff     = assignedStaff;
+            t.assessment        = assessment;
+            t.targetDate        = targetDate;
             t.othersDescription = othersDesc;
           }
           updateStats(allTickets);
@@ -661,10 +1013,8 @@
           showToast('Error: ' + (result && result.error ? result.error : 'Could not submit assessment.'));
         }
       })
-      .withFailureHandler(function(err) {
-        showToast('Error: ' + err.message);
-      })
-      .submitAssessment(jrfNo, assignedStaff, recommendation, assessment, targetDate, othersDesc);
+      .withFailureHandler(onServerError)
+      .submitAssessment(dashToken, jrfNo, assignedStaff, recommendation, assessment, targetDate, othersDesc, serviceLocation);
   }
 
   // ── Complete Modal ──────────────────────────────────────────────────────────
@@ -730,10 +1080,8 @@
           showToast('Error: ' + (result && result.error ? result.error : 'Could not update ticket.'));
         }
       })
-      .withFailureHandler(function(err) {
-        showToast('Error: ' + err.message);
-      })
-      .updateTicketStatus(jrfNo, actionTaken, taskResult);
+      .withFailureHandler(onServerError)
+      .updateTicketStatus(dashToken, jrfNo, actionTaken, taskResult);
   }
 
   // ── PDF ─────────────────────────────────────────────────────────────────────
@@ -754,10 +1102,8 @@
         URL.revokeObjectURL(url);
         showToast('PDF downloaded for ' + jrfNo + '.');
       })
-      .withFailureHandler(function(err) {
-        showToast('PDF error: ' + err.message);
-      })
-      .generateFormPdf(jrfNo);
+      .withFailureHandler(onServerError)
+      .generateFormPdf(dashToken, jrfNo);
   }
 
   // ── Utilities ───────────────────────────────────────────────────────────────
@@ -834,10 +1180,8 @@
           showToast('Error: ' + (result && result.error ? result.error : 'Could not update ticket.'));
         }
       })
-      .withFailureHandler(function(err) {
-        showToast('Error: ' + err.message);
-      })
-      .updateTicketDetails(jrfNo, name, position, supervisor, problem);
+      .withFailureHandler(onServerError)
+      .updateTicketDetails(dashToken, jrfNo, name, position, supervisor, problem);
   }
 
   // Close modals on overlay click
@@ -851,7 +1195,304 @@
     if (e.target === this) closeCompleteModal();
   });
 
-  window.addEventListener('load', loadTickets);
+  // ── Reports ─────────────────────────────────────────────────────────────────
+
+  function showReports(btn) {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    // Hide ticket table, show reports panel
+    document.getElementById('table-section').style.display  = 'none';
+    document.getElementById('reports-panel').style.display  = 'flex';
+    // Default month/year dropdowns to current month and year on first open
+    const monthSel = document.getElementById('rpt-month');
+    if (!monthSel._initialized) {
+      monthSel.value        = String(new Date().getMonth() + 1);
+      monthSel._initialized = true;
+    }
+    renderReports();
+  }
+
+  function renderReports() {
+    populateYearDropdown();
+    renderMonthlySummary();
+    renderOverdue();
+    renderBarChart();
+  }
+
+  // Populate the year dropdown from ticket data; default to current year if available
+  function populateYearDropdown() {
+    const sel        = document.getElementById('rpt-year');
+    const savedVal   = sel.value;
+    const currentYear = String(new Date().getFullYear());
+
+    const years = new Set();
+    allTickets.forEach(function(t) {
+      if (t.date) years.add(t.date.substring(0, 4));
+    });
+
+    sel.innerHTML = '<option value="all">All years</option>';
+    Array.from(years).sort().reverse().forEach(function(y) {
+      const opt = document.createElement('option');
+      opt.value       = y;
+      opt.textContent = y;
+      sel.appendChild(opt);
+    });
+
+    // Restore previous selection, or default to current year
+    if (Array.from(years).includes(savedVal)) {
+      sel.value = savedVal;
+    } else if (Array.from(years).includes(currentYear)) {
+      sel.value = currentYear;
+    } else {
+      sel.value = 'all';
+    }
+  }
+
+  // Returns ticket groups filtered by year/month dropdowns, keyed by 'YYYY-MM'
+  function getMonthlyGroups() {
+    const year  = document.getElementById('rpt-year').value;
+    const month = document.getElementById('rpt-month').value;
+
+    const groups = {};
+    allTickets.forEach(function(t) {
+      if (!t.date) return;
+      const y   = t.date.substring(0, 4);
+      const m   = t.date.substring(5, 7);
+      const key = y + '-' + m;
+
+      if (year  !== 'all' && y !== year) return;
+      if (month !== 'all' && parseInt(m, 10) !== parseInt(month, 10)) return;
+
+      if (!groups[key]) groups[key] = { year: y, month: m, tickets: [] };
+      groups[key].tickets.push(t);
+    });
+
+    return groups;
+  }
+
+  function renderMonthlySummary() {
+    const groups = getMonthlyGroups();
+    const tbody  = document.getElementById('monthly-body');
+    const empty  = document.getElementById('monthly-empty');
+    const table  = document.getElementById('monthly-table');
+
+    tbody.innerHTML = '';
+
+    const keys = Object.keys(groups).sort().reverse();
+    if (keys.length === 0) {
+      table.style.display = 'none';
+      empty.style.display = 'block';
+      return;
+    }
+
+    table.style.display = 'table';
+    empty.style.display = 'none';
+
+    keys.forEach(function(key) {
+      const g       = groups[key];
+      const tickets = g.tickets;
+
+      const submitted = tickets.length;
+      const completed = tickets.filter(t => t.status === 'Completed').length;
+      const rejected  = tickets.filter(t => t.status === 'Rejected').length;
+      const pending   = tickets.filter(t => t.status !== 'Completed' && t.status !== 'Rejected').length;
+
+      // Average resolution days for completed tickets that have both dates
+      const resolved = tickets.filter(t =>
+        t.status === 'Completed' && t.dateCompleted && t.date
+      );
+      let avgDays = '—';
+      if (resolved.length > 0) {
+        const totalDays = resolved.reduce(function(sum, t) {
+          const start = new Date(t.date);
+          const end   = new Date(t.dateCompleted);
+          return sum + Math.max(0, (end - start) / (1000 * 60 * 60 * 24));
+        }, 0);
+        avgDays = (totalDays / resolved.length).toFixed(1);
+      }
+
+      const monthName = MONTH_NAMES[parseInt(g.month, 10) - 1] + ' ' + g.year;
+
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td>' + esc(monthName) + '</td>' +
+        '<td>' + submitted + '</td>' +
+        '<td>' + completed + '</td>' +
+        '<td>' + pending   + '</td>' +
+        '<td>' + rejected  + '</td>' +
+        '<td>' + avgDays   + '</td>';
+      tbody.appendChild(tr);
+    });
+  }
+
+  function exportMonthlyCsv() {
+    const groups = getMonthlyGroups();
+    const keys   = Object.keys(groups).sort();
+
+    const lines = ['Month,Submitted,Completed,Pending,Rejected,Avg. Resolution Days'];
+
+    keys.forEach(function(key) {
+      const g       = groups[key];
+      const tickets = g.tickets;
+
+      const submitted = tickets.length;
+      const completed = tickets.filter(t => t.status === 'Completed').length;
+      const rejected  = tickets.filter(t => t.status === 'Rejected').length;
+      const pending   = tickets.filter(t => t.status !== 'Completed' && t.status !== 'Rejected').length;
+
+      const resolved = tickets.filter(t =>
+        t.status === 'Completed' && t.dateCompleted && t.date
+      );
+      let avgDays = '';
+      if (resolved.length > 0) {
+        const totalDays = resolved.reduce(function(sum, t) {
+          const start = new Date(t.date);
+          const end   = new Date(t.dateCompleted);
+          return sum + Math.max(0, (end - start) / (1000 * 60 * 60 * 24));
+        }, 0);
+        avgDays = (totalDays / resolved.length).toFixed(1);
+      }
+
+      const monthName = MONTH_NAMES[parseInt(g.month, 10) - 1] + ' ' + g.year;
+      lines.push([monthName, submitted, completed, pending, rejected, avgDays].join(','));
+    });
+
+    const year  = document.getElementById('rpt-year').value;
+    const month = document.getElementById('rpt-month').value;
+    const suffix =
+      (year  !== 'all' ? year  : 'ALL') + '-' +
+      (month !== 'all' ? String(month).padStart(2, '0') : 'ALL');
+
+    const csv  = lines.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'PSHS-ZRC-Monthly-Report-' + suffix + '.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function renderOverdue() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // A ticket is overdue if not Completed/Rejected and submitted more than 7 days ago
+    const overdueTickets = allTickets
+      .filter(function(t) {
+        if (t.status === 'Completed' || t.status === 'Rejected') return false;
+        if (!t.date) return false;
+        const submitted = new Date(t.date);
+        const daysOpen  = Math.floor((today - submitted) / (1000 * 60 * 60 * 24));
+        return daysOpen > 7;
+      })
+      .map(function(t) {
+        const daysOpen = Math.floor((today - new Date(t.date)) / (1000 * 60 * 60 * 24));
+        return Object.assign({}, t, { daysOpen: daysOpen });
+      })
+      .sort(function(a, b) { return b.daysOpen - a.daysOpen; });
+
+    const countLine  = document.getElementById('overdue-count-line');
+    const tableWrap  = document.getElementById('overdue-table-wrap');
+    const tbody      = document.getElementById('overdue-body');
+
+    if (overdueTickets.length === 0) {
+      countLine.textContent   = 'No overdue tickets';
+      countLine.className     = 'overdue-count no-overdue';
+      tableWrap.style.display = 'none';
+      return;
+    }
+
+    countLine.textContent   = overdueTickets.length + ' ticket(s) overdue';
+    countLine.className     = 'overdue-count has-overdue';
+    tableWrap.style.display = 'block';
+
+    tbody.innerHTML = '';
+    overdueTickets.forEach(function(t) {
+      const tr = document.createElement('tr');
+      // Light red row for tickets open 14+ days
+      if (t.daysOpen >= 14) tr.className = 'overdue-critical';
+      tr.innerHTML =
+        '<td><strong>' + esc(t.jrfNo)                     + '</strong></td>' +
+        '<td>' + esc(t.date)                               + '</td>' +
+        '<td>' + esc(t.name)                               + '</td>' +
+        '<td class="td-problem">' + esc(t.problem)         + '</td>' +
+        '<td>' + esc(t.recType || '—')                     + '</td>' +
+        '<td>' + esc(t.assignedStaff || '—')               + '</td>' +
+        '<td><span class="badge ' + badgeClass(t.status) + '">' + esc(t.status) + '</span></td>' +
+        '<td><strong>' + t.daysOpen + '</strong></td>';
+      tbody.appendChild(tr);
+    });
+  }
+
+  function renderBarChart() {
+    // Count tickets per recType and per serviceLocation as separate entries
+    const counts = {};
+    allTickets.forEach(function(t) {
+      if (t.recType) {
+        counts[t.recType] = (counts[t.recType] || 0) + 1;
+      }
+      if (t.serviceLocation) {
+        counts[t.serviceLocation] = (counts[t.serviceLocation] || 0) + 1;
+      }
+    });
+
+    // Sort descending by count, exclude zero-count entries
+    const entries = Object.entries(counts)
+      .filter(function(e) { return e[1] > 0; })
+      .sort(function(a, b) { return b[1] - a[1]; });
+
+    const chart = document.getElementById('bar-chart');
+    chart.innerHTML = '';
+
+    if (entries.length === 0) {
+      chart.innerHTML = '<div class="empty" style="padding:24px;">No ticket data available.</div>';
+      return;
+    }
+
+    const maxCount = entries[0][1];
+
+    entries.forEach(function(entry) {
+      const label = entry[0];
+      const count = entry[1];
+      const pct   = maxCount > 0 ? (count / maxCount * 100) : 0;
+
+      const row = document.createElement('div');
+      row.className = 'bar-row';
+      row.innerHTML =
+        '<div class="bar-label">' + esc(label) + '</div>' +
+        '<div class="bar-track">' +
+          '<div class="bar-fill" style="width:' + pct.toFixed(1) + '%"></div>' +
+        '</div>' +
+        '<div class="bar-count">' + count + '</div>';
+      chart.appendChild(row);
+    });
+  }
+
+  window.addEventListener('load', function() {
+    if (!dashToken) {
+      showLogin();
+      return;
+    }
+    // Validate the stored token before showing the dashboard
+    google.script.run
+      .withSuccessHandler(function(email) {
+        if (email) {
+          document.getElementById('logged-in-email').textContent = email;
+          loadTickets();
+        } else {
+          dashToken = '';
+          sessionStorage.removeItem('dashToken');
+          showLogin();
+        }
+      })
+      .withFailureHandler(function() {
+        dashToken = '';
+        sessionStorage.removeItem('dashToken');
+        showLogin();
+      })
+      .validateDashboardSession(dashToken);
+  });
 </script>
 </body>
 </html>

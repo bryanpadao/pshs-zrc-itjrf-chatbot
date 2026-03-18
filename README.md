@@ -59,15 +59,18 @@ pshs-zrc-itjrf-chatbot/
 | D | Position | Requester position/role |
 | E | Supervisor | Immediate supervisor name |
 | F | Problem Description | Full problem description |
-| G | Recommendation Type | Set by IT staff via Dashboard before director approval |
-| H | Status | `Pending Supervisor Approval` → `Pending IT Assessment` → `In Progress` → `Completed` |
-| I | Assigned Staff | Set via Dashboard |
+| G | Recommendation Type | Set by IT staff via Dashboard Assess modal |
+| H | Status | `Pending Supervisor Approval` → `Pending IT Assessment` → `Pending Director Approval` → `In Progress` → `Completed` / `Rejected` |
+| I | Assigned Staff | Set via Dashboard Assess modal |
 | J | Date Completed | Set automatically when marked Completed |
 | K | Assessment | IT staff's technical assessment |
 | L | Action Taken | Steps taken to resolve |
 | M | Task Result | `Successful` or `Failed` |
 | N | Target Date | Target date for completion (set during assessment) |
-| O | Others Description | Used when Recommendation Type is "Others, Repair" |
+| O | Others Description | Used when Recommendation Type is "Others, Repair" — written to PDF cell P25 |
+| P | Service Location | `In-Campus Repair` or `External Service Provider Repair` — set during assessment |
+
+> **Existing Tickets sheets:** If the sheet already exists without col P, manually add `Service Location` to cell P1.
 
 ### 3. KnowledgeBase Tab — Column Layout
 
@@ -111,8 +114,9 @@ Go to **Project Settings → Script Properties** and add:
 |----------|-------|
 | `GEMINI_API_KEY` | Your key from aistudio.google.com |
 | `WEBAPP_URL` | Your deployed Web App URL (set after first deploy) |
-| `IT_STAFF_EMAIL` | Email address to notify when a ticket is approved |
+| `IT_STAFF_EMAIL` | Comma-separated IT staff emails — also controls who can log into the Dashboard (e.g. `pgpadao@zrc.pshs.edu.ph,dasulit@zrc.pshs.edu.ph`) |
 | `DIRECTOR_EMAIL` | Email address of the Campus Director for approval |
+| `DASHBOARD_PASSWORD` | Shared password for IT staff Dashboard login |
 
 ### 3. Authorize the Script
 
@@ -184,7 +188,7 @@ Status: Completed
 PDF of the official ITJRF can be downloaded from the Dashboard
 ```
 
-Approval links are single-use UUID tokens stored in the `Approvals` tab. Clicking a link a second time shows "Already processed."
+Approval links are single-use UUID tokens stored in the `Approvals` tab. Clicking a link a second time shows "Already processed." Links automatically expire after **7 days**.
 
 ---
 
@@ -192,21 +196,30 @@ Approval links are single-use UUID tokens stored in the `Approvals` tab. Clickin
 
 Access at: `YOUR_WEBAPP_URL?page=dashboard`
 
+### Authentication
+
+The Dashboard is protected by a login screen. IT staff must enter their email (must match `IT_STAFF_EMAIL`) and the shared `DASHBOARD_PASSWORD`. Sessions are valid for **8 hours** and are stored server-side in CacheService — they automatically expire and are cleared on logout.
+
 ### Features
 
-- **Stats bar**: Total / Pending / Completed ticket counts
-- **Filter**: All / Pending / Completed
-- **Edit button**: Correct Name, Position, Supervisor, or Problem Description for any ticket
+- **Stats bar**: Total / Active / Completed ticket counts
+- **Filter buttons**: All / Pending Approval / Pending Assessment / Pending Director / In Progress / Completed
+- **Reports panel** (Reports button):
+  - Monthly Summary table with year/month dropdowns and CSV export
+  - Overdue Tickets table (open > 7 days; highlighted red at 14+ days)
+  - Horizontal bar chart of ticket counts by recommendation/service type
+- **Edit button** (every ticket): Correct Name, Position, Supervisor, or Problem Description
 - **Assess button** (Pending IT Assessment tickets):
-  - Select Recommendation Type (10 ITJRF types)
-  - If "Others, Repair" — enter a description (saved separately, written to PDF cell P25)
+  - Select Assigned Staff, Service Location, Recommendation Type
+  - If "Others, Repair" — enter a description (saved to col O, written to PDF cell P25)
   - Enter Assessment notes and Target Date
   - Triggers director approval email
 - **Complete button** (In Progress tickets):
   - Enter Action Taken and Task Result (Successful / Failed)
   - Marks ticket as Completed and records the completion date
-- **PDF button** (Completed tickets only):
+- **PDF button** (Completed tickets):
   - Generates a filled copy of the official ITJRF as a downloadable PDF
+- **Auto-refresh**: every 60 seconds to pick up approval status changes
 
 ---
 
@@ -247,14 +260,19 @@ Keyword matching is case-insensitive. The `Keywords` column (D) is optional — 
 |---------|-----|
 | No supervisor approval email sent | Check `WEBAPP_URL` Script Property is set. Re-authorize the script by running a function from the editor. |
 | "Invalid Link" on approval page | Expected for test tokens. Real ticket approval links work correctly. |
+| "Link Expired" on approval page | Links expire after 7 days. Ask IT to resend if still needed. |
 | "Already processed" on approval link | The link was already clicked — check ticket status in the Dashboard. |
 | Approval emails not received | Verify `DIRECTOR_EMAIL` / `IT_STAFF_EMAIL` Script Properties are correct. Check spam. |
+| Dashboard login: "Unrecognized email" | Ensure the email matches exactly what is in the `IT_STAFF_EMAIL` Script Property (comma-separated). |
+| Dashboard login: "Incorrect password" | Set `DASHBOARD_PASSWORD` in Script Properties. |
 | Chatbot not updating after code changes | Create a new deployment version. |
 | KnowledgeBase not returning results | Ensure the tab is named exactly `KnowledgeBase` and the Issue column contains relevant keywords. |
 | Web App shows "You need permission" | Change the deployment's access setting to the appropriate audience. |
 | "There was a problem saving your request" | Check that `SPREADSHEET_ID` is correct in `Code.gs` and the script has edit access to the sheet. |
+| "Submission limit reached" in chatbot | The system allows max 20 ticket submissions per hour globally. Wait and try again. |
 | Dashboard not reflecting approval status | The dashboard auto-refreshes every 60 seconds. Wait or reload the page manually. |
 | PDF button is greyed out | PDF is only available for **Completed** tickets. |
+| Background image not showing on chatbot | Ensure the Drive image file is shared as "Anyone with the link — Viewer". |
 
 ---
 

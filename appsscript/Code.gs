@@ -13,6 +13,14 @@ const GEMINI_ENDPOINT =
   `https://generativelanguage.googleapis.com/v1/models/${GEMINI_MODEL}:generateContent`;
 const APPROVALS_SHEET_NAME = 'Approvals';
 
+// Security & rate limiting
+const APPROVAL_TOKEN_TTL_DAYS  = 7;     // approval email links expire after 7 days
+const DASHBOARD_SESSION_TTL    = 28800; // dashboard session: 8 hours (seconds)
+const CHAT_SESSION_TTL         = 1800;  // chat session cache: 30 minutes (seconds)
+const MAX_CHAT_MESSAGES        = 30;    // max user messages per chat session
+const MAX_SUBMISSIONS_PER_HOUR = 20;    // global ticket submission rate limit per hour
+const MAX_MESSAGE_LENGTH       = 1000;  // max characters accepted per user message
+
 const RECOMMENDATION_TYPES = [
   'Hardware Repair',
   'Hardware Installation',
@@ -30,19 +38,19 @@ const RECOMMENDATION_TYPES = [
 const FORM_STEPS = [
   {
     key: 'name',
-    prompt: 'What is your full name?',
+    prompt: 'What is your full name?\n(This will appear on the IT Job Request Form as the requester.)',
   },
   {
     key: 'position',
-    prompt: 'What is your position/designation?',
+    prompt: 'What is your position or designation?\n(e.g. Teacher I, Administrative Assistant II)',
   },
   {
     key: 'department',
-    prompt: 'What department or office are you under?',
+    prompt: 'What department or office are you under?\n(I\'ll use this to automatically look up your supervisor for the approval email.)',
   },
   {
     key: 'supervisor',
-    prompt: 'Who is your immediate supervisor?',
+    prompt: 'Who is your immediate supervisor?\n(They will receive an approval email before IT takes action.)',
     // Skipped if auto-filled from the Departments sheet lookup
     skippable: true,
   },
@@ -53,6 +61,105 @@ const FORM_STEPS = [
     skippable: true,
   },
 ];
+
+// =============================================================================
+// Security Functions
+// =============================================================================
+
+/**
+ * Sanitizes a user input string: trims, enforces max length, strips common
+ * prompt-injection delimiters so they cannot reach Gemini in raw form.
+ */
+function sanitizeInput(text) {
+  if (typeof text !== 'string') return '';
+  text = text.trim();
+  if (text.length > MAX_MESSAGE_LENGTH) text = text.substring(0, MAX_MESSAGE_LENGTH);
+  // Strip signal delimiters and injection markers
+  text = text.replace(/%%[A-Z_]+(?::[\s\S]*?)?%%/g, '');
+  text = text.replace(/<\|.*?\|>/g, '');
+  text = text.replace(/\[INST\]|\[\/INST\]|<s>|<\/s>/gi, '');
+  return text;
+}
+
+/**
+ * Global ticket-submission rate limiter using CacheService.
+ * Allows at most MAX_SUBMISSIONS_PER_HOUR submissions per rolling 60-minute window.
+ * Throws if the limit is exceeded.
+ */
+function checkGlobalRateLimit() {
+  const cache  = CacheService.getScriptCache();
+  const key    = 'rate_limit_submissions';
+  const now    = Date.now();
+  const window = 3600000; // 1 hour in ms
+
+  let timestamps = [];
+  const raw = cache.get(key);
+  if (raw) { try { timestamps = JSON.parse(raw); } catch (e) { timestamps = []; } }
+
+  // Discard timestamps outside the rolling window
+  timestamps = timestamps.filter(function(ts) { return now - ts < window; });
+
+  if (timestamps.length >= MAX_SUBMISSIONS_PER_HOUR) {
+    throw new Error('Submission limit reached. Please try again later.');
+  }
+
+  timestamps.push(now);
+  cache.put(key, JSON.stringify(timestamps), 3660); // cache for slightly over 1 hour
+}
+
+/**
+ * Authenticates an IT staff member for dashboard access.
+ * Validates email against IT_STAFF_EMAIL script property and password against
+ * DASHBOARD_PASSWORD script property.
+ * Returns { ok: true, token, email } on success, or { ok: false, error } on failure.
+ */
+function dashboardLogin(email, password) {
+  if (!email || !password) return { ok: false, error: 'Email and password are required.' };
+
+  const props         = PropertiesService.getScriptProperties();
+  const allowedEmails = (props.getProperty('IT_STAFF_EMAIL') || '')
+    .split(',')
+    .map(function(e) { return e.trim().toLowerCase(); })
+    .filter(Boolean);
+  const validPassword = props.getProperty('DASHBOARD_PASSWORD') || '';
+
+  if (!allowedEmails.includes(email.toLowerCase().trim())) {
+    return { ok: false, error: 'Unrecognized email address.' };
+  }
+  if (!validPassword || password !== validPassword) {
+    return { ok: false, error: 'Incorrect password.' };
+  }
+
+  const token = Utilities.getUuid();
+  CacheService.getScriptCache().put('dash_session_' + token, email.toLowerCase().trim(), DASHBOARD_SESSION_TTL);
+  Logger.log('Dashboard login: ' + email);
+  return { ok: true, token: token, email: email.toLowerCase().trim() };
+}
+
+/**
+ * Returns the email address associated with a dashboard session token, or null if invalid/expired.
+ */
+function validateDashboardSession(token) {
+  if (!token) return null;
+  return CacheService.getScriptCache().get('dash_session_' + token);
+}
+
+/**
+ * Invalidates a dashboard session token (logout).
+ */
+function dashboardLogout(token) {
+  if (token) CacheService.getScriptCache().remove('dash_session_' + token);
+}
+
+/**
+ * Internal auth guard. Throws 'Session expired. Please log in again.' if the token is invalid.
+ * Call this at the start of every dashboard server function.
+ */
+function _requireDashboardAuth(token) {
+  if (!validateDashboardSession(token)) {
+    throw new Error('Session expired. Please log in again.');
+  }
+}
 
 // =============================================================================
 // Entry Points
@@ -110,10 +217,31 @@ function doPost(e) {
   }
 }
 function processChat(params) {
-  const message = (params.message || '').trim();
-  const session = params.session || {};
+  // Sanitize raw input
+  const message = sanitizeInput(params.message || '');
+  if (!message) return { reply: 'Please type a message.', sessionId: params.sessionId || '' };
 
-  if (!message) return { reply: 'Please type a message.', session };
+  // Load server-side session from cache (or create a new one)
+  const cache     = CacheService.getScriptCache();
+  let   currentId = params.sessionId || '';
+  let   session   = {};
+
+  if (currentId) {
+    const stored = cache.get('chat_session_' + currentId);
+    if (stored) { try { session = JSON.parse(stored); } catch (e) { session = {}; } }
+  } else {
+    // Issue a new session ID for this conversation
+    currentId = Utilities.getUuid();
+  }
+
+  // Enforce per-session message limit
+  session.messageCount = (session.messageCount || 0) + 1;
+  if (session.messageCount > MAX_CHAT_MESSAGES) {
+    return {
+      reply: 'This conversation has reached the message limit. Please start a new conversation.',
+      sessionId: currentId,
+    };
+  }
 
   let result;
   if (session.state === 'collecting') {
@@ -123,7 +251,22 @@ function processChat(params) {
   } else {
     result = handleChat(message, session);
   }
-  return result;
+
+  // Persist the updated session, or clear it if the ticket was submitted
+  const newKey = 'chat_session_' + currentId;
+  if (result.submitted) {
+    cache.remove(newKey);
+  } else {
+    const toStore = Object.assign({}, result.session, { messageCount: session.messageCount });
+    cache.put(newKey, JSON.stringify(toStore), CHAT_SESSION_TTL);
+  }
+
+  return {
+    reply:     result.reply,
+    replies:   result.replies,
+    submitted: result.submitted,
+    sessionId: currentId,
+  };
 }
 
 function jsonResponse(data) {
@@ -164,13 +307,28 @@ function handleChat(message, session) {
     session.step     = 0;
     session.formData = { description: prefillDesc };
 
+    // Pre-fill recommendation for known request types
+    const lowerDesc = prefillDesc.toLowerCase();
+    const isOthers =
+      lowerDesc.includes('cctv')         || lowerDesc.includes('footage')     || lowerDesc.includes('camera')  ||
+      lowerDesc.includes('poster')       || lowerDesc.includes('tarpaulin')   || lowerDesc.includes('tarps')   ||
+      lowerDesc.includes('pubmat')       || lowerDesc.includes('design')      || lowerDesc.includes('layout')  ||
+      lowerDesc.includes('social media') || lowerDesc.includes('facebook')    || lowerDesc.includes('post')    ||
+      lowerDesc.includes('certificate')  || lowerDesc.includes('announcement')|| lowerDesc.includes('publication');
+    if (isOthers) session.formData.recType = 'Others, Repair';
+
+    // Intro message tells the user why we're asking these questions
+    const introMessage =
+      'I\'ll need a few details to fill out the IT Job Request Form. ' +
+      'Once submitted, your supervisor will receive an approval email — then IT staff will be notified to take action.';
+
     const firstPrompt = getNextPrompt(session);
-    const combined    = (visibleReply ? visibleReply + '\n\n' : '') + firstPrompt;
+    const combined    = (visibleReply ? visibleReply + '\n\n' : '') + introMessage + '\n\n' + firstPrompt;
 
     // Add the exchange to history
     session.history = appendHistory(session.history, message, combined);
-    // Return as separate replies so the UI renders two distinct bubbles
-    const replies = [visibleReply, firstPrompt].filter(Boolean);
+    // Return as separate replies so the UI renders each as a distinct bubble
+    const replies = [visibleReply, introMessage, firstPrompt].filter(Boolean);
     return { reply: combined, replies, session };
   }
 
@@ -367,12 +525,23 @@ function callGemini(message, history, kbContext) {
     '1. Be concise, professional, and friendly.\n' +
     '2. When answering technical questions, use the Knowledge Base entries provided.\n' +
     '3. If no KB entry is relevant, use your own knowledge to help troubleshoot.\n' +
-    '4. If the user wants to file an IT Job Request (or the issue clearly requires one), ' +
-       'end your reply with the exact signal: %%FILE_TICKET:<one-sentence summary of the problem>%% ' +
-       '— do not mention this signal to the user in the visible part of your reply.\n' +
+    '4. When the issue clearly requires IT intervention OR the user confirms they want to file a request, ' +
+       'end your reply with the exact signal: %%FILE_TICKET:<one-sentence summary of the problem>%% — do not mention this signal to the user in the visible part of your reply. ' +
+       'IMPORTANT RULES for this signal:\n' +
+       '   a. Send it AS SOON AS the problem is understood and IT action is needed — do NOT ask the user for their name, position, department, or supervisor first. The chatbot form will collect those details automatically after the signal is sent.\n' +
+       '   b. NEVER include this signal in the same reply where you are still asking troubleshooting questions about the technical problem itself (e.g. asking what error message they see, whether a cable is connected). Only ask those questions if you genuinely need more info before knowing whether IT action is required.\n' +
+       '   c. If you are still diagnosing the technical issue, do NOT send the signal yet — wait for the user\'s answer first. But once it is clear that the issue requires IT work, send the signal immediately.\n' +
     '5. Do not make up ticket numbers or form details.\n' +
-    '6. You handle IT support AND information/publication requests (graphic design, pubmat, social media posting, certificates) since the IT unit also serves as the designated Information Officers of PSHS ZRC. Accept and assist with these requests. Publication and design requests should use "Others, Repair" as the recommendation type.\n' +
-    '7. This chatbot does NOT support file uploads or attachments. If a user mentions attaching or uploading files, politely inform them that files cannot be submitted here and ask them to describe their request in text instead.\n\n' +
+    '6. You handle IT support AND information/publication requests (graphic design, pubmat, social media posting, tarpaulin, certificates, announcements) since the IT unit also serves as the designated Information Officers of PSHS ZRC. ' +
+       'For ANY publication or design request: write ONE short sentence acknowledging it (e.g. "Got it, I\'ll file a request for your poster design."), then IMMEDIATELY end your reply with %%FILE_TICKET:<description>%%. ' +
+       'Do NOT ask for design details, event info, dimensions, content, or any specifics — the IT staff will coordinate those details directly with the requester after the ticket is filed. ' +
+       'NEVER list out Name / Position / Department / Supervisor — the chatbot form collects those automatically.\n' +
+    '7. The IT Job Request Form (ITJRF) is REQUIRED for ALL IT services — it is the official record-keeping document. ' +
+       'If a user says they have already sent details to IT, or already talked to IT staff, STILL file a ticket. ' +
+       'Reply with one sentence: "Noted — I still need to file an official IT Job Request Form as the record for this request." then IMMEDIATELY send %%FILE_TICKET:<description>%%. ' +
+       'Do NOT list Name / Position / Department / Supervisor — the form collects those automatically.\n' +
+    '8. This chatbot does NOT support file uploads or attachments. If a user mentions attaching or uploading files, politely inform them that files cannot be submitted here and ask them to describe their request in text instead.\n' +
+    '9. CCTV viewing requests are governed by the Data Privacy Act. When a user asks about CCTV viewing, your FIRST response must: (a) inform the user that they need to prepare a formal letter addressed to the Campus Director containing the exact date, time range, camera location, and reason for the footage review, and that the Campus Director must approve this letter before IT can proceed. Do NOT ask for CCTV details — the user puts those in the letter, not in the ticket. After giving this instruction, end your reply with the %%FILE_TICKET%% signal so the chatbot proceeds to collect the user\'s name, position, department, and supervisor for the IT Job Request ticket.\n\n' +
 
     'ITJRF Recommendation Types (for reference):\n' +
     RECOMMENDATION_TYPES.map((t, i) => `${i + 1}. ${t}`).join('\n');
@@ -454,6 +623,9 @@ function callGemini(message, history, kbContext) {
  */
 function saveTicket(data) {
   try {
+    // Enforce global submission rate limit before writing to the sheet
+    checkGlobalRateLimit();
+
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     let sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
 
@@ -475,6 +647,8 @@ function saveTicket(data) {
         'Action Taken',
         'Task Result',
         'Target Date',
+        'Others Description',
+        'Service Location',
       ]);
       sheet.setFrozenRows(1);
     }
@@ -500,7 +674,7 @@ function saveTicket(data) {
       data.position    || '',
       data.supervisor  || '',
       data.description || '',
-      '',                // Recommendation Type — filled by IT staff during assessment
+      data.recType     || '',  // Recommendation Type — pre-filled for known types; otherwise set by IT staff
       'Pending Supervisor Approval', // default Status
       '',                // Assigned Staff — filled by IT staff later
       '',                // Date Completed — filled by IT staff later
@@ -519,6 +693,7 @@ function saveTicket(data) {
         supervisor:      data.supervisor       || '',
         supervisorEmail: data.supervisorEmail  || null,
         problem:         data.description      || '',
+        recommendation:  data.recType          || '',
         date:            today,
       });
     } catch (emailErr) {
@@ -575,8 +750,10 @@ function appendHistory(history, userText, modelText) {
 
 /**
  * Returns all tickets from the Tickets sheet as an array of objects.
+ * @param {string} token - Dashboard session token
  */
-function getTickets() {
+function getTickets(token) {
+  _requireDashboardAuth(token);
   const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
   if (!sheet) return [];
@@ -594,12 +771,14 @@ function getTickets() {
       problem:       data[i][5],
       recType:       data[i][6],
       status:        data[i][7],
-      assignedStaff: data[i][8]  || '',
-      assessment:    data[i][10] || '',
+      assignedStaff:  data[i][8]  || '',
+      dateCompleted:  data[i][9]  ? Utilities.formatDate(new Date(data[i][9]),  Session.getScriptTimeZone(), 'yyyy-MM-dd') : '',
+      assessment:     data[i][10] || '',
       actionTaken:        data[i][11] || '',
       taskResult:         data[i][12] || '',
       targetDate:         data[i][13] ? Utilities.formatDate(new Date(data[i][13]), Session.getScriptTimeZone(), 'yyyy-MM-dd') : '',
       othersDescription:  data[i][14] || '',
+      serviceLocation:    data[i][15] || '',
     });
   }
   return tickets;
@@ -609,8 +788,10 @@ function getTickets() {
  * Marks an In Progress ticket as Completed. Writes Action Taken and Task Result.
  * Assessment and Target Date are set earlier by submitAssessment().
  * Returns { ok: true } or { ok: false, error: string }.
+ * @param {string} token - Dashboard session token
  */
-function updateTicketStatus(jrfNo, actionTaken, taskResult) {
+function updateTicketStatus(token, jrfNo, actionTaken, taskResult) {
+  _requireDashboardAuth(token);
   if (!actionTaken || !actionTaken.trim()) {
     return { ok: false, error: 'Action Taken is required before marking as Completed.' };
   }
@@ -643,8 +824,10 @@ function updateTicketStatus(jrfNo, actionTaken, taskResult) {
 /**
  * Submits IT assessment for a ticket and sends director approval email.
  * Called from Dashboard when IT staff submits the Assess modal.
+ * @param {string} token - Dashboard session token
  */
-function submitAssessment(jrfNo, assignedStaff, recommendation, assessment, targetDate, othersDescription) {
+function submitAssessment(token, jrfNo, assignedStaff, recommendation, assessment, targetDate, othersDescription, serviceLocation) {
+  _requireDashboardAuth(token);
   if (!assessment || !assessment.trim()) {
     return { ok: false, error: 'Assessment is required.' };
   }
@@ -664,7 +847,8 @@ function submitAssessment(jrfNo, assignedStaff, recommendation, assessment, targ
       sheet.getRange(i + 1, 9).setValue(assignedStaff || '');         // I — Assigned Staff
       sheet.getRange(i + 1, 11).setValue(assessment.trim());          // K — Assessment
       sheet.getRange(i + 1, 14).setValue(targetDate || '');           // N — Target Date
-      sheet.getRange(i + 1, 15).setValue(othersDescription || '');   // O — Others Description
+      sheet.getRange(i + 1, 15).setValue(othersDescription  || '');   // O — Others Description
+      sheet.getRange(i + 1, 16).setValue(serviceLocation   || '');   // P — Service Location
 
       try {
         sendApprovalEmail('director', jrfNo, {
@@ -703,6 +887,19 @@ function handleApproval(token, action) {
       if (data[i][0] === token) { approvalRow = data[i]; rowIdx = i + 1; break; }
     }
     if (!approvalRow) return approvalHtmlPage('Invalid Link', 'This approval link is invalid or has expired. Please contact the IT Unit if you believe this is an error.');
+
+    // Check token age against TTL (col E = index 4 = Created timestamp)
+    if (approvalRow[4]) {
+      const ageDays = (Date.now() - new Date(approvalRow[4]).getTime()) / (1000 * 60 * 60 * 24);
+      if (ageDays > APPROVAL_TOKEN_TTL_DAYS) {
+        return approvalHtmlPage(
+          'Link Expired',
+          'This approval link has expired (links are valid for ' + APPROVAL_TOKEN_TTL_DAYS + ' days). ' +
+          'Please contact the IT Unit to resend the request if still needed.'
+        );
+      }
+    }
+
     if (approvalRow[3]) {
       const wasApproved = String(approvalRow[3]).startsWith('approve');
       return approvalHtmlPage(
@@ -773,10 +970,11 @@ function sendApprovalEmail(type, jrfNo, ticket) {
   let aSheet   = ss.getSheetByName(APPROVALS_SHEET_NAME);
   if (!aSheet) {
     aSheet = ss.insertSheet(APPROVALS_SHEET_NAME);
-    aSheet.appendRow(['Token', 'JRF#', 'Type', 'Used']);
+    aSheet.appendRow(['Token', 'JRF#', 'Type', 'Used', 'Created']);
     aSheet.setFrozenRows(1);
   }
-  aSheet.appendRow([token, jrfNo, type, '']);
+  // Col E (index 4) — ISO timestamp used to enforce APPROVAL_TOKEN_TTL_DAYS expiry
+  aSheet.appendRow([token, jrfNo, type, '', new Date().toISOString()]);
 
   // Determine recipient
   let recipientEmail, recipientName;
@@ -812,8 +1010,7 @@ function sendApprovalEmail(type, jrfNo, ticket) {
       divider +
       'PROBLEM DESCRIPTION\n' +
       ticket.problem + '\n' +
-      divider +
-      'Recommendation Type: ' + ticket.recommendation + '\n' +
+      (ticket.recommendation ? divider + 'Recommendation Type: ' + ticket.recommendation + '\n' : '') +
       divider +
       'Please click one of the links below to respond:\n\n' +
       '  ✅ APPROVE:  ' + approveUrl + '\n\n' +
@@ -916,8 +1113,10 @@ function approvalHtmlPage(title, message) {
 /**
  * Updates requester details (Name, Position, Supervisor, Problem) for a ticket.
  * Used by IT staff to correct typos entered during the chatbot flow.
+ * @param {string} token - Dashboard session token
  */
-function updateTicketDetails(jrfNo, name, position, supervisor, problem) {
+function updateTicketDetails(token, jrfNo, name, position, supervisor, problem) {
+  _requireDashboardAuth(token);
   if (!name || !name.trim()) return { ok: false, error: 'Name is required.' };
 
   const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
@@ -939,8 +1138,10 @@ function updateTicketDetails(jrfNo, name, position, supervisor, problem) {
 
 /**
  * Assigns a staff member to a ticket (updates Assigned Staff column only).
+ * @param {string} token - Dashboard session token
  */
-function assignStaff(jrfNo, staffName) {
+function assignStaff(token, jrfNo, staffName) {
+  _requireDashboardAuth(token);
   const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
   if (!sheet) return false;
@@ -957,8 +1158,11 @@ function assignStaff(jrfNo, staffName) {
 
 /**
  * Copies the Template tab, fills in ticket data, exports as A4 PDF (base64).
+ * @param {string} authToken - Dashboard session token (named authToken to avoid
+ *                             collision with the internal OAuth token variable)
  */
-function generateFormPdf(jrfNo) {
+function generateFormPdf(authToken, jrfNo) {
+  _requireDashboardAuth(authToken);
   const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
   if (!sheet) throw new Error('Tickets sheet not found');
@@ -986,6 +1190,7 @@ function generateFormPdf(jrfNo) {
     taskResult:         row[12] || '',
     targetDate:         row[13] ? Utilities.formatDate(new Date(row[13]), Session.getScriptTimeZone(), 'MM/dd/yyyy') : '',
     othersDescription:  row[14] || '',
+    serviceLocation:    row[15] || '',
   };
 
   // Copy Template tab
@@ -1078,18 +1283,29 @@ function generateFormPdf(jrfNo) {
   if (ticket.taskResult === 'Successful') writeCell('F35', '✓'); // Task Successful: F35
   if (ticket.taskResult === 'Failed')     writeCell('L35', '✓'); // Task Failed:     L35
 
-  // Recommendation type checkboxes
-  const checkboxMap = {
-    'Hardware Repair':                  'C23',
-    'Hardware Installation':            'F23',
-    'Network Connection':               'J23',
-    'Preventive Maintenance':           'O23',
-    'Software Development':             'C24',
-    'Software Modification':            'F24',
-    'Software Installation':            'J24',
-    'Others, Repair':                   'O24',
+  // Service location checkboxes (row 21)
+  const locationMap = {
     'In-Campus Repair':                 'F21',
     'External Service Provider Repair': 'J21',
+  };
+  const locationCell = locationMap[ticket.serviceLocation];
+  if (locationCell) {
+    const r = temp.getRange(locationCell);
+    r.setValue('✓');
+    r.setHorizontalAlignment('center');
+    r.setVerticalAlignment('middle');
+  }
+
+  // Recommendation type checkboxes (rows 23-24)
+  const checkboxMap = {
+    'Hardware Repair':        'C23',
+    'Hardware Installation':  'F23',
+    'Network Connection':     'J23',
+    'Preventive Maintenance': 'O23',
+    'Software Development':   'C24',
+    'Software Modification':  'F24',
+    'Software Installation':  'J24',
+    'Others, Repair':         'O24',
   };
   const checkCell = checkboxMap[ticket.recommendation];
   if (checkCell) {
