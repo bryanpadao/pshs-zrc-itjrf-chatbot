@@ -276,15 +276,23 @@ Client sends only `sessionId` (opaque UUID). Session object lives in `CacheServi
 | `'confirm'` | `handleConfirm()` | Waits for yes/no; on yes → `saveTicket()` + locks chat UI |
 
 ### Form steps (FORM_STEPS array) — service location and rec type set by IT staff on Dashboard
-1. `name` — full name
-2. `position` — position/designation
-3. `department` — department/office → triggers `lookupDepartment()` to auto-fill supervisor
-4. `supervisor` — *(skippable if auto-filled from Departments sheet)*
-5. `description` — problem description *(skippable — pre-filled from chat signal)*
+
+Each step includes a contextual hint explaining what the field is for and why it's needed.
+
+1. `name` — "What is your full name? (This will appear on the IT Job Request Form as the requester.)"
+2. `position` — "What is your position or designation? (e.g. Teacher I, Administrative Assistant II)"
+3. `department` — "What department or office are you under? (I'll use this to automatically look up your supervisor for the approval email.)"
+4. `supervisor` — "Who is your immediate supervisor? (They will receive an approval email before IT takes action.)" *(skippable if auto-filled from Departments sheet)*
+5. `description` — "Please describe the problem in detail." *(skippable — pre-filled from chat signal)*
 
 ### Pre-fill logic in handleChat()
 When `%%FILE_TICKET%%` is detected, `session.formData.description` is pre-filled from the signal.
-Additionally, if the description contains `cctv`, `footage`, or `camera` keywords, `session.formData.recType` is pre-set to `'Others, Repair'` and written to col G when the ticket is saved.
+
+An intro message is also returned as the first separate bubble: *"I'll need a few details to fill out the IT Job Request Form. Once submitted, your supervisor will receive an approval email — then IT staff will be notified to take action."*
+
+Additionally, if the description contains any of the following keywords, `session.formData.recType` is pre-set to `'Others, Repair'` and written to col G when the ticket is saved:
+- CCTV/media: `cctv`, `footage`, `camera`
+- Publication/design: `poster`, `tarpaulin`, `tarps`, `pubmat`, `design`, `layout`, `social media`, `facebook`, `post`, `certificate`, `announcement`, `publication`
 
 ### Security functions
 - **`sanitizeInput(text)`** — trims, enforces MAX_MESSAGE_LENGTH, strips `%%SIGNAL%%` and injection delimiters
@@ -317,7 +325,7 @@ Additionally, if the description contains `cctv`, `footage`, or `camera` keyword
 
 ---
 
-## 9. Gemini system prompt (8 rules)
+## 9. Gemini system prompt (9 rules)
 
 ```
 You are the IT Support Chatbot for PSHS Zamboanga Regional Campus (PSHS ZRC).
@@ -327,23 +335,42 @@ Behavior rules:
 1. Be concise, professional, and friendly.
 2. When answering technical questions, use the Knowledge Base entries provided.
 3. If no KB entry is relevant, use your own knowledge to help troubleshoot.
-4. If the user wants to file an IT Job Request (or the issue clearly requires one),
-   end your reply with the exact signal: %%FILE_TICKET:<one-sentence summary>%%
+4. When the issue clearly requires IT intervention OR the user confirms they want to file
+   a request, end your reply with: %%FILE_TICKET:<one-sentence summary of the problem>%%
    — do not mention this signal to the user in the visible part of your reply.
+   IMPORTANT RULES for this signal:
+   a. Send it AS SOON AS the problem is understood and IT action is needed — do NOT ask
+      the user for their name, position, department, or supervisor first. The chatbot form
+      collects those details automatically after the signal is sent.
+   b. NEVER include this signal in the same reply where you are still asking
+      troubleshooting questions (e.g. asking what error they see, whether a cable is
+      plugged in). Only ask those if you genuinely need more info before knowing whether
+      IT action is required.
+   c. Once it is clear the issue requires IT work, send the signal immediately.
 5. Do not make up ticket numbers or form details.
 6. You handle IT support AND information/publication requests (graphic design, pubmat,
-   social media posting, certificates) since the IT unit also serves as the designated
-   Information Officers of PSHS ZRC. Publication and design requests use "Others, Repair".
-7. This chatbot does NOT support file uploads or attachments. If a user mentions
-   attaching or uploading files, politely inform them and ask them to describe in text.
-8. CCTV viewing requests are governed by the Data Privacy Act. When a user asks about
+   social media posting, tarpaulin, certificates, announcements) since the IT unit also
+   serves as the designated Information Officers of PSHS ZRC.
+   For ANY publication or design request: write ONE short sentence acknowledging it
+   (e.g. "Got it, I'll file a request for your poster design."), then IMMEDIATELY end
+   with %%FILE_TICKET:<description>%%. Do NOT ask for design details, event info,
+   dimensions, content, or any specifics — IT staff will coordinate those directly.
+   NEVER list Name / Position / Department / Supervisor — the form collects those.
+7. The IT Job Request Form (ITJRF) is REQUIRED for ALL IT services — it is the official
+   record-keeping document. If a user says they already sent details to IT or already
+   talked to IT staff, STILL file a ticket. Reply: "Noted — I still need to file an
+   official IT Job Request Form as the record for this request." then IMMEDIATELY send
+   %%FILE_TICKET:<description>%%. Do NOT list Name / Position / Department / Supervisor.
+8. This chatbot does NOT support file uploads or attachments. If a user mentions
+   attaching or uploading files, politely inform them that files cannot be submitted here
+   and ask them to describe their request in text instead.
+9. CCTV viewing requests are governed by the Data Privacy Act. When a user asks about
    CCTV viewing, your FIRST response must inform the user that they need to prepare a
    formal letter addressed to the Campus Director containing the exact date, time range,
    camera location, and reason for the footage review, and that the Campus Director must
    approve this letter before IT can proceed. Do NOT ask for CCTV details — the user puts
    those in the letter, not in the ticket. After giving this instruction, end your reply
-   with the %%FILE_TICKET%% signal so the chatbot proceeds to collect the user's name,
-   position, department, and supervisor for the IT Job Request ticket.
+   with the %%FILE_TICKET%% signal.
 
 ITJRF Recommendation Types (for reference):
 1. Hardware Repair  2. Hardware Installation  3. Network Connection
@@ -356,13 +383,36 @@ ITJRF Recommendation Types (for reference):
 
 ## 10. Index.html — chat UI
 
-- Chat bubbles: user right, bot left
-- Session object kept in JS, sent on every `processChat()` call via `google.script.run`
-- Response `{ reply, replies, session, submitted }`:
-  - If `replies` array has >1 item → render each as a **separate bubble** (used when Gemini acknowledgment + first form question are combined)
+Messaging-app style (iMessage/WhatsApp inspired). Primary color: `#1a3c6e` (PSHS dark blue).
+
+### Layout
+- **Mobile** (`< 900px`): `position: fixed; inset: 0` — true full-screen, bypasses Apps Script iframe constraints
+- **Desktop** (`≥ 900px`): centered card, `width: 560px`, `height: calc(100dvh - 48px)`, `border-radius: 14px`, `box-shadow`
+- Background: PSHS campus photo (Google Drive thumbnail), visible only on desktop around the card
+
+### Header
+- Circular avatar (50px) with gold border ring + outer blue ring
+- Bot name + "IT Job Request Form Chatbot" subtitle
+- Avatar src: PSHS ZRC logo from Google Drive
+
+### Message bubbles
+- **Bot** (left): white background, `border-bottom-left-radius: 4px`, wrapped in `.msg-row.bot-row` with 26px circular bot avatar beside it
+- **User** (right): `#1a3c6e` background, white text, `border-bottom-right-radius: 4px`, appended directly to `.chat-messages` (no row wrapper — ensures `max-width: 84%` calculates against full chat width)
+- `overflow-wrap: break-word; word-break: normal` — prevents mid-word character splits
+- `gap: 10px` on `.chat-messages` — spacing between bubbles
+- `<meta name="format-detection">` + CSS `color: #1a1a1a !important` on `.message.bot *` — prevents browser auto-link coloring
+
+### Input bar
+- iMessage-style: rounded textarea + circular send button
+- Textarea: `overflow-y: hidden` by default; JS sets `overflowY: auto` only when `scrollHeight > 120px` (prevents scrollbar on short text)
+- Font-size `16px` prevents iOS auto-zoom on focus
+
+### Session / response handling
+- `sessionId` string sent on every `processChat()` call via `google.script.run`
+- Response `{ reply, replies, submitted }`:
+  - If `replies` array has > 1 item → render each as a **separate bubble** (intro message + form question rendered as distinct bubbles)
   - If `submitted: true` → lock input, hide chat bar, show **"Start a New Conversation"** button
-- **"Start a New Conversation"** calls `resetChat()` — clears messages, resets session, re-enables input. Does NOT use `location.reload()` (breaks in Apps Script iframe).
-- Primary color: `#1a3c6e` (PSHS dark blue)
+- **"Start a New Conversation"** calls `resetChat()` — clears DOM, resets `sessionId`, re-enables input, shows greeting. Does NOT use `location.reload()` (breaks in Apps Script iframe).
 
 ---
 
@@ -444,7 +494,7 @@ DASHBOARD_PASSWORD  → shared password for IT staff dashboard login
 |-------|---------------|
 | Apps Script has no memory between requests | Chat session stored in CacheService (30 min TTL); client sends only `sessionId` string |
 | Code edits do not go live automatically | Always create a new deployment version |
-| Gemini mentions files | System prompt rule 7 blocks this |
+| Gemini mentions files | System prompt rule 8 blocks this |
 | First form question combined with Gemini reply | `replies[]` array — UI renders each as separate bubble |
 | Dashboard flickering on auto-refresh | Changed from 10s to 60s; table hides during load |
 | Recommendation not in chatbot | Removed from FORM_STEPS; now set by IT staff in Assess modal |
@@ -453,13 +503,19 @@ DASHBOARD_PASSWORD  → shared password for IT staff dashboard login
 | PDF rows expanding | `writeTextBlock` uses word-wrap at 120 chars + WrapStrategy.CLIP + setRowHeight(21) |
 | Others description in PDF | Saved to col O; written to Template cell P25 when recommendation = Others, Repair |
 | Campus Director always same | Hard-coded as `Edman H. Gallamaso` in `generateFormPdf`, written bold to N28 |
-| CCTV viewing requests | Rule 8 in system prompt: bot explains letter-to-CD requirement first, then files ticket. recType pre-set to Others, Repair via keyword detection |
+| CCTV viewing requests | Rule 9 in system prompt: bot explains letter-to-CD requirement first, then files ticket. recType pre-set to Others, Repair via keyword detection |
+| Publication/design requests listing form fields | Rule 6 in system prompt: ONE acknowledgment sentence then immediate %%FILE_TICKET%%. recType pre-set to Others, Repair via keyword detection in handleChat() |
+| Chatbot not filing ticket when user says "sent details to IT" | Rule 7 in system prompt: ITJRF required for all services; bot given exact reply sentence + immediate signal |
 | "Start a New Conversation" breaks in iframe | Uses `resetChat()` JS function instead of `location.reload()` |
 | Supervisor email shows undefined recommendation | Recommendation line only shown in email if `ticket.recommendation` is set |
 | Dashboard login "Unrecognized email" | Email must exactly match a value in the `IT_STAFF_EMAIL` script property (comma-separated) |
 | Approval token expiry | Tokens have a 7-day TTL enforced via the `Created` timestamp in Approvals col E |
 | Dashboard session expiry during use | `onServerError()` detects "Session expired" and redirects to login overlay automatically |
 | Index.html background image not showing | Drive file must be shared as "Anyone with the link — Viewer" for the thumbnail URL to load |
+| Mobile chat UI showing as card (not full-screen) | `position: fixed; inset: 0` on `.chat-container`; `width/height` relative values don't work inside Apps Script iframe |
+| User bubble text breaking mid-word | Removed row wrapper from user bubbles; `max-width: 84%` now calculates against full chat width, not shrink-to-fit row |
+| Browser auto-coloring bot text blue | `<meta name="format-detection">` + `color: #1a1a1a !important` on `.message.bot *` |
+| Textarea showing scrollbar on short input | `overflow-y: hidden` default; JS enables `auto` only when `scrollHeight > 120px` |
 
 ---
 
