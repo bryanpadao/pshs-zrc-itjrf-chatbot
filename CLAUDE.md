@@ -137,7 +137,7 @@ RAG data source. Tab name must be exactly `KnowledgeBase`. Row 1 = header.
 |--------|--------|-------|
 | A | Issue | Short title |
 | B | Solution | Step-by-step fix |
-| C | Category | Network / Hardware / Software / Account / Maintenance / External |
+| C | Category | Network / Hardware / Software / Account / Maintenance / External / Technical Assistance |
 | D | Keywords | Comma-separated trigger words (optional) |
 
 ### Tab name: `Departments`
@@ -145,9 +145,30 @@ Maps department/office to supervisor for auto-fill during chatbot form flow.
 
 | Column | Header | Notes |
 |--------|--------|-------|
-| A | Department/Office | e.g. `OCD`, `CID`, `FAD`, `SSD` |
+| A | Department/Office | Abbreviated code e.g. `OCD`, `CID`, `FAD`, `SSD` |
 | B | Supervisor Name | e.g. `Edman H. Gallamaso` |
 | C | Supervisor Email | e.g. `supervisor@zrc.pshs.edu.ph` |
+| D | Full Name | e.g. `Office of the Campus Director`, `Student Services Division` |
+
+`lookupDepartment()` matches on col A (abbreviated) **or** col D (full name) — whichever the input matches.
+
+### Tab name: `Employees`
+Optional. Enables auto-fill of position and department when a name is recognized.
+
+| Column | Header | Notes |
+|--------|--------|-------|
+| A | Name | Full name — must match exactly what the user types (case-insensitive) |
+| B | Position | Full position title e.g. `Teacher III` — written to the ITJRF form |
+| C | Department/Office | Abbreviated code matching col A of `Departments` sheet e.g. `SSD` |
+
+When a name match is found: position and department are pre-filled → those form steps are skipped. Then `lookupDepartment()` is called automatically to also skip the supervisor step. Best case: user types only their name and jumps straight to the problem description.
+
+**Matching strategy in `lookupEmployee()`:**
+1. Exact match (case-insensitive) — silent auto-fill
+2. Fuzzy match — if user typed ≥2 words and no exact match, checks whether every typed word appears in any employee name. Used only when exactly 1 candidate matches (avoids false positives). On fuzzy match: auto-fills same fields + shows a note: *"I found you as [Full Name] in our records — I've pre-filled your details. If that's not you, please let me know."* rendered as a separate bubble
+3. No match / ambiguous (0 or 2+ candidates) — proceeds with manual questions
+
+Examples: `"Maria Santos"` matches `"Maria C. Santos"` ✓ · `"Bryan Padao"` matches `"Philip Bryan G. Padao"` ✓ · `"Maria"` (1 word) → no fuzzy attempt, falls through to manual.
 
 ### Tab name: `Approvals`
 Stores one-time approval tokens. Auto-created on first email send.
@@ -265,6 +286,20 @@ const MAX_MESSAGE_LENGTH       = 1000;  // max characters accepted per user mess
 - **`doPost(e)`** — routes to `handleChat`, `handleFormStep`, or `handleConfirm` based on `session.state`
 - **`processChat(params)`** — called from `Index.html` via `google.script.run`; accepts `{ message, sessionId }`; sanitizes input; loads/saves session via CacheService; enforces per-session message limit
 
+### Quick-start buttons (Index.html landing)
+
+Before the chat input is enabled, the user sees 5 option buttons. Input is disabled until a choice is made.
+
+| Button | Key | Behavior |
+|--------|-----|----------|
+| 💻 IT Issue / Repair | `it_issue` | Enables input; normal Gemini chat flow |
+| 🎨 Publication / Design | `publication` | Asks for request details first → user describes or says "already sent" → intro + name → auto-fill → confirmation. `recType = 'Others, Repair'` |
+| 📷 CCTV Viewing Request | `cctv` | Shows Data Privacy Act letter requirement + asks for brief description → intro + name → auto-fill → confirmation. `recType = 'Others, Repair'` |
+| 🔧 Technical Assistance | `technical` | Asks for assistance details first → user describes → intro + name → auto-fill → confirmation. `recType = 'Others, Repair'` |
+| ❓ Ask a Question | `question` | Enables input; normal Gemini chat flow |
+
+`handleQuickStart(type, session)` — sets `session.quickStartSteps = true`, uses `QUICK_START_FORM_STEPS` (description → name → position → department → supervisor). Returns the description prompt immediately (customised per type); the form intro message is injected after the description answer is collected, just before the name step. CCTV also prepends the Data Privacy Act note before the description prompt.
+
 ### Chat flow (server-side session state machine)
 
 Client sends only `sessionId` (opaque UUID). Session object lives in `CacheService` for 30 minutes.
@@ -279,9 +314,9 @@ Client sends only `sessionId` (opaque UUID). Session object lives in `CacheServi
 
 Each step includes a contextual hint explaining what the field is for and why it's needed.
 
-1. `name` — "What is your full name? (This will appear on the IT Job Request Form as the requester.)"
-2. `position` — "What is your position or designation? (e.g. Teacher I, Administrative Assistant II)"
-3. `department` — "What department or office are you under? (I'll use this to automatically look up your supervisor for the approval email.)"
+1. `name` — "What is your full name? (This will appear on the IT Job Request Form as the requester.)" → triggers `lookupEmployee()`; if found, auto-fills position, positionAbbrev, department, and supervisor
+2. `position` — "What is your position or designation? (e.g. Teacher I, Administrative Assistant II)" *(skippable if auto-filled from Employees sheet)*
+3. `department` — "What department or office are you under? (I'll use this to automatically look up your supervisor for the approval email.)" *(skippable if auto-filled from Employees sheet)*
 4. `supervisor` — "Who is your immediate supervisor? (They will receive an approval email before IT takes action.)" *(skippable if auto-filled from Departments sheet)*
 5. `description` — "Please describe the problem in detail." *(skippable — pre-filled from chat signal)*
 
@@ -313,7 +348,8 @@ Additionally, if the description contains any of the following keywords, `sessio
 - **`handleApproval(token, action)`** — validates token; checks 7-day expiry against col E (Created); updates ticket status; notifies IT staff
 - **`approvalHtmlPage(title, message)`** — returns styled HTML response for approval link clicks
 - **`getStaffEmail(name)`** — looks up email from optional `Staff` sheet by name
-- **`lookupDepartment(dept)`** — looks up supervisor name + email from `Departments` sheet
+- **`lookupDepartment(dept)`** — looks up supervisor name + email + full office name from `Departments` sheet; matches on abbreviated code (col A) or full name (col D)
+- **`lookupEmployee(name)`** — looks up position and department from `Employees` sheet by name (exact then fuzzy); returns null if sheet missing or name not found
 
 ### Dashboard functions (all require `token` as first param → call `_requireDashboardAuth(token)`)
 - **`getTickets(token)`** — returns array of ticket objects (all 16 fields including `dateCompleted`)
@@ -325,58 +361,48 @@ Additionally, if the description contains any of the following keywords, `sessio
 
 ---
 
-## 9. Gemini system prompt (9 rules)
+## 9. Gemini system prompt (2 critical overrides + 7 general rules)
+
+The prompt is structured with **CRITICAL OVERRIDES** first — these override everything else. This forces `gemini-2.5-flash-lite` to follow them rather than defaulting to its trained "ask for requirements" behavior.
 
 ```
-You are the IT Support Chatbot for PSHS Zamboanga Regional Campus (PSHS ZRC).
-You help staff troubleshoot IT issues and file IT Job Request Forms (ITJRF).
+CRITICAL OVERRIDES (apply before all other rules):
 
-Behavior rules:
+OVERRIDE A — Publication / design / information requests:
+Trigger words: poster, tarpaulin, tarps, pubmat, design, layout, social media, facebook,
+post, certificate, announcement, publication, graphic, infographic, flyer, banner.
+WHEN ANY of these words appear — MUST:
+  1. Write EXACTLY ONE short acknowledgment sentence.
+     e.g. "Got it, I'll file a request for your poster design."
+  2. IMMEDIATELY end with %%FILE_TICKET:<one-sentence description>%%
+NEVER ask for design details, event info, dimensions, content, deadline, or specifics.
+NEVER ask for Name / Position / Department / Supervisor.
+NEVER give a normal chat reply.
+
+OVERRIDE B — User says they already sent details or already talked to IT:
+Trigger phrases: "I already sent", "I sent", "already told IT", "already talked to IT",
+"I emailed IT", "already gave the details", "already reported".
+WHEN any of these appear — MUST:
+  1. Reply with EXACTLY: "Noted — I still need to file an official IT Job Request Form
+     as the record for this request."
+  2. IMMEDIATELY end with %%FILE_TICKET:<one-sentence description>%%
+NEVER just say "thank you" or "noted" and stop.
+
+General rules:
 1. Be concise, professional, and friendly.
 2. When answering technical questions, use the Knowledge Base entries provided.
 3. If no KB entry is relevant, use your own knowledge to help troubleshoot.
 4. When the issue clearly requires IT intervention OR the user confirms they want to file
-   a request, end your reply with: %%FILE_TICKET:<one-sentence summary of the problem>%%
-   — do not mention this signal to the user in the visible part of your reply.
-   IMPORTANT RULES for this signal:
-   a. Send it AS SOON AS the problem is understood and IT action is needed — do NOT ask
-      the user for their name, position, department, or supervisor first. The chatbot form
-      collects those details automatically after the signal is sent.
-   b. NEVER include this signal in the same reply where you are still asking
-      troubleshooting questions (e.g. asking what error they see, whether a cable is
-      plugged in). Only ask those if you genuinely need more info before knowing whether
-      IT action is required.
-   c. Once it is clear the issue requires IT work, send the signal immediately.
+   a request, end your reply with %%FILE_TICKET:<one-sentence summary>%%
+   a. Send AS SOON AS the problem is understood — do NOT ask for name/position/dept/supervisor first.
+   b. NEVER send in the same reply as diagnostic questions.
+   c. Once IT action is clearly needed, send immediately.
 5. Do not make up ticket numbers or form details.
-6. You handle IT support AND information/publication requests (graphic design, pubmat,
-   social media posting, tarpaulin, certificates, announcements) since the IT unit also
-   serves as the designated Information Officers of PSHS ZRC.
-   For ANY publication or design request: write ONE short sentence acknowledging it
-   (e.g. "Got it, I'll file a request for your poster design."), then IMMEDIATELY end
-   with %%FILE_TICKET:<description>%%. Do NOT ask for design details, event info,
-   dimensions, content, or any specifics — IT staff will coordinate those directly.
-   NEVER list Name / Position / Department / Supervisor — the form collects those.
-7. The IT Job Request Form (ITJRF) is REQUIRED for ALL IT services — it is the official
-   record-keeping document. If a user says they already sent details to IT or already
-   talked to IT staff, STILL file a ticket. Reply: "Noted — I still need to file an
-   official IT Job Request Form as the record for this request." then IMMEDIATELY send
-   %%FILE_TICKET:<description>%%. Do NOT list Name / Position / Department / Supervisor.
-8. This chatbot does NOT support file uploads or attachments. If a user mentions
-   attaching or uploading files, politely inform them that files cannot be submitted here
-   and ask them to describe their request in text instead.
-9. CCTV viewing requests are governed by the Data Privacy Act. When a user asks about
-   CCTV viewing, your FIRST response must inform the user that they need to prepare a
-   formal letter addressed to the Campus Director containing the exact date, time range,
-   camera location, and reason for the footage review, and that the Campus Director must
-   approve this letter before IT can proceed. Do NOT ask for CCTV details — the user puts
-   those in the letter, not in the ticket. After giving this instruction, end your reply
-   with the %%FILE_TICKET%% signal.
-
-ITJRF Recommendation Types (for reference):
-1. Hardware Repair  2. Hardware Installation  3. Network Connection
-4. Preventive Maintenance  5. Software Development  6. Software Modification
-7. Software Installation  8. In-Campus Repair  9. External Service Provider Repair
-10. Others, Repair
+6. This chatbot does NOT support file uploads. If a user mentions attaching files,
+   inform them and ask them to describe in text.
+7. CCTV viewing requests: inform the user they need a formal letter to the Campus
+   Director with exact date, time range, camera location, and reason — Director must
+   approve before IT can proceed. Do NOT ask for CCTV details. End with %%FILE_TICKET%%.
 ```
 
 ---
@@ -464,9 +490,10 @@ Served at `?page=dashboard`. Uses `google.script.run` (no HTTP fetch).
 ### Google Sheet tabs to create manually
 1. `Tickets` — auto-created with headers on first ticket (columns A–P)
 2. `KnowledgeBase` — add issues/solutions (see `docs/knowledge-base-sample.csv`; copy rows directly into the sheet)
-3. `Departments` — columns: Department/Office | Supervisor Name | Supervisor Email
-4. `Template` — paste the official ITJRF layout (see `docs/ITJRF.xlsx`)
-5. `Approvals` — auto-created on first approval email
+3. `Departments` — columns: Department/Office | Supervisor Name | Supervisor Email | Full Name
+4. `Employees` — *(optional)* columns: Name | Position | Department/Office
+5. `Template` — paste the official ITJRF layout (see `docs/ITJRF.xlsx`)
+6. `Approvals` — auto-created on first approval email
 
 > **Existing Tickets sheets:** If the sheet already exists without col P header, manually add `Service Location` to cell P1.
 
@@ -504,13 +531,15 @@ DASHBOARD_PASSWORD  → shared password for IT staff dashboard login
 | Others description in PDF | Saved to col O; written to Template cell P25 when recommendation = Others, Repair |
 | Campus Director always same | Hard-coded as `Edman H. Gallamaso` in `generateFormPdf`, written bold to N28 |
 | CCTV viewing requests | Rule 9 in system prompt: bot explains letter-to-CD requirement first, then files ticket. recType pre-set to Others, Repair via keyword detection |
-| Publication/design requests listing form fields | Rule 6 in system prompt: ONE acknowledgment sentence then immediate %%FILE_TICKET%%. recType pre-set to Others, Repair via keyword detection in handleChat() |
-| Chatbot not filing ticket when user says "sent details to IT" | Rule 7 in system prompt: ITJRF required for all services; bot given exact reply sentence + immediate signal |
+| Publication/design requests not triggering ticket / asking for details | `gemini-2.5-flash-lite` ignores numbered rules for these cases. Fixed by promoting to CRITICAL OVERRIDE A at top of system prompt with explicit NEVER/ALWAYS language and trigger word list |
+| Chatbot not filing ticket when user says "sent details to IT" | Same root cause. Fixed by promoting to CRITICAL OVERRIDE B with exact reply sentence required |
 | "Start a New Conversation" breaks in iframe | Uses `resetChat()` JS function instead of `location.reload()` |
 | Supervisor email shows undefined recommendation | Recommendation line only shown in email if `ticket.recommendation` is set |
 | Dashboard login "Unrecognized email" | Email must exactly match a value in the `IT_STAFF_EMAIL` script property (comma-separated) |
 | Approval token expiry | Tokens have a 7-day TTL enforced via the `Created` timestamp in Approvals col E |
 | Dashboard session expiry during use | `onServerError()` detects "Session expired" and redirects to login overlay automatically |
+| Dashboard logs out on page refresh | Apps Script iframe URL changes on each load — `sessionStorage` (scoped to iframe URL) is empty after refresh. Fixed by using `localStorage` instead; server-side CacheService TTL (6 h) still expires the token |
+| DASHBOARD_SESSION_TTL was 28800 (8 h) | CacheService max is 21600 s (6 h) — values above this throw. Fixed to 21600 |
 | Index.html background image not showing | Drive file must be shared as "Anyone with the link — Viewer" for the thumbnail URL to load |
 | Mobile chat UI showing as card (not full-screen) | `position: fixed; inset: 0` on `.chat-container`; `width/height` relative values don't work inside Apps Script iframe |
 | User bubble text breaking mid-word | Removed row wrapper from user bubbles; `max-width: 84%` now calculates against full chat width, not shrink-to-fit row |

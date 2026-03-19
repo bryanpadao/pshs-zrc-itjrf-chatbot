@@ -15,7 +15,7 @@ const APPROVALS_SHEET_NAME = 'Approvals';
 
 // Security & rate limiting
 const APPROVAL_TOKEN_TTL_DAYS  = 7;     // approval email links expire after 7 days
-const DASHBOARD_SESSION_TTL    = 28800; // dashboard session: 8 hours (seconds)
+const DASHBOARD_SESSION_TTL    = 21600; // dashboard session: 6 hours (seconds) — CacheService max is 21600
 const CHAT_SESSION_TTL         = 1800;  // chat session cache: 30 minutes (seconds)
 const MAX_CHAT_MESSAGES        = 30;    // max user messages per chat session
 const MAX_SUBMISSIONS_PER_HOUR = 20;    // global ticket submission rate limit per hour
@@ -43,10 +43,14 @@ const FORM_STEPS = [
   {
     key: 'position',
     prompt: 'What is your position or designation?\n(e.g. Teacher I, Administrative Assistant II)',
+    // Skipped if auto-filled from the Employees sheet lookup
+    skippable: true,
   },
   {
     key: 'department',
     prompt: 'What department or office are you under?\n(I\'ll use this to automatically look up your supervisor for the approval email.)',
+    // Skipped if auto-filled from the Employees sheet lookup
+    skippable: true,
   },
   {
     key: 'supervisor',
@@ -58,6 +62,36 @@ const FORM_STEPS = [
     key: 'description',
     prompt: 'Please describe the problem in detail.',
     // May be pre-filled from the chat — skipped if already set
+    skippable: true,
+  },
+];
+
+// Step order for quick-start buttons (Publication/Design, CCTV, Technical Assistance).
+// Description is collected FIRST so the user provides request details before
+// the form asks for their name and auto-fills position/department/supervisor.
+const QUICK_START_FORM_STEPS = [
+  {
+    key: 'description',
+    prompt: 'Please describe your request in detail.',
+    // Prompt is customised per type in handleQuickStart(); this is a fallback only.
+  },
+  {
+    key: 'name',
+    prompt: 'What is your full name?\n(This will appear on the IT Job Request Form as the requester.)',
+  },
+  {
+    key: 'position',
+    prompt: 'What is your position or designation?\n(e.g. Teacher I, Administrative Assistant II)',
+    skippable: true,
+  },
+  {
+    key: 'department',
+    prompt: 'What department or office are you under?\n(I\'ll use this to automatically look up your supervisor for the approval email.)',
+    skippable: true,
+  },
+  {
+    key: 'supervisor',
+    prompt: 'Who is your immediate supervisor?\n(They will receive an approval email before IT takes action.)',
     skippable: true,
   },
 ];
@@ -203,6 +237,8 @@ function doPost(e) {
       result = handleFormStep(message, session);
     } else if (session.state === 'confirm') {
       result = handleConfirm(message, session);
+    } else if (session.state === 'confirm_name') {
+      result = handleConfirmName(message, session);
     } else {
       result = handleChat(message, session);
     }
@@ -219,7 +255,6 @@ function doPost(e) {
 function processChat(params) {
   // Sanitize raw input
   const message = sanitizeInput(params.message || '');
-  if (!message) return { reply: 'Please type a message.', sessionId: params.sessionId || '' };
 
   // Load server-side session from cache (or create a new one)
   const cache     = CacheService.getScriptCache();
@@ -233,6 +268,18 @@ function processChat(params) {
     // Issue a new session ID for this conversation
     currentId = Utilities.getUuid();
   }
+
+  // Handle quick-start buttons (Publication/Design, CCTV, Technical Assistance).
+  // Skips Gemini entirely — initialises the form collection state directly.
+  if (params.quickStart && !session.state) {
+    const result = handleQuickStart(params.quickStart, session);
+    cache.put('chat_session_' + currentId, JSON.stringify(
+      Object.assign({}, result.session, { messageCount: 1 })
+    ), CHAT_SESSION_TTL);
+    return { reply: result.reply, replies: result.replies, sessionId: currentId };
+  }
+
+  if (!message) return { reply: 'Please type a message.', sessionId: currentId };
 
   // Enforce per-session message limit
   session.messageCount = (session.messageCount || 0) + 1;
@@ -248,6 +295,8 @@ function processChat(params) {
     result = handleFormStep(message, session);
   } else if (session.state === 'confirm') {
     result = handleConfirm(message, session);
+  } else if (session.state === 'confirm_name') {
+    result = handleConfirmName(message, session);
   } else {
     result = handleChat(message, session);
   }
@@ -338,14 +387,69 @@ function handleChat(message, session) {
 }
 
 // =============================================================================
+// Quick-Start (direct form bypass — no Gemini)
+// =============================================================================
+
+/**
+ * Initialises the form collection state directly when the user picks a
+ * quick-start button (Publication/Design, CCTV, Technical Assistance).
+ * Skips Gemini entirely; pre-sets recType = 'Others, Repair' for all three.
+ *
+ * @param {string} type - 'publication' | 'cctv' | 'technical'
+ * @param {object} session
+ */
+function handleQuickStart(type, session) {
+  session.state           = 'collecting';
+  session.step            = 0;
+  session.formData        = { recType: 'Others, Repair' };
+  session.history         = [];
+  session.quickStartSteps = true; // use QUICK_START_FORM_STEPS (description first)
+
+  // Description prompt is shown immediately; customised per request type so the
+  // user knows exactly what details to provide before we ask for their name.
+  if (type === 'publication') {
+    const prompt =
+      'Please describe your publication or design request.\n' +
+      '(e.g. type of material, purpose, key information to include — or let us know if you\'ve already sent the details to the IT unit.)';
+    return { reply: prompt, replies: [prompt], session };
+  }
+
+  if (type === 'cctv') {
+    // Show the Data Privacy Act requirement first, then ask for a brief description
+    const cctvNote =
+      'CCTV viewing requests are governed by the Data Privacy Act.\n\n' +
+      'Please prepare a formal letter addressed to the Campus Director containing:\n' +
+      '• Exact date and time range of the footage needed\n' +
+      '• Camera location\n' +
+      '• Reason for the request\n\n' +
+      'The Campus Director must approve the letter before IT can proceed. ' +
+      'In the meantime, I\'ll file a ticket to put this on record.';
+    const descPrompt =
+      'Please provide a brief description of your CCTV viewing request.\n' +
+      '(You may also let us know if you\'ve already submitted a formal letter to the Campus Director.)';
+    const replies = [cctvNote, descPrompt];
+    return { reply: replies.join('\n\n'), replies, session };
+  }
+
+  // Technical Assistance
+  const prompt =
+    'Please describe the technical assistance you need.\n' +
+    '(You may also let us know if you\'ve already provided the details to the IT unit.)';
+  return { reply: prompt, replies: [prompt], session };
+}
+
+// =============================================================================
 // Form Collection State
 // =============================================================================
 
 /**
- * Advances through FORM_STEPS one answer at a time.
+ * Advances through form steps one answer at a time.
+ * Quick-start flows (Publication/Design, CCTV, Technical Assistance) use
+ * QUICK_START_FORM_STEPS (description first); normal Gemini flows use FORM_STEPS.
  */
 function handleFormStep(message, session) {
-  const step = FORM_STEPS[session.step];
+  const steps = session.quickStartSteps ? QUICK_START_FORM_STEPS : FORM_STEPS;
+  const step  = steps[session.step];
 
   // Validate recommendation type (must be 1–10 or exact name)
   if (step.key === 'rec_type') {
@@ -359,10 +463,23 @@ function handleFormStep(message, session) {
       };
     }
     session.formData[step.key] = resolved;
+  } else if (step.key === 'name') {
+    session.formData[step.key] = message;
+    // Look up the employee in the Employees sheet (exact match first, then fuzzy).
+    // If a match is found, pause and ask the user to confirm before auto-filling.
+    const emp = lookupEmployee(message);
+    if (emp) {
+      session.pendingEmployee = emp;
+      session.state = 'confirm_name';
+      const confirmMsg =
+        'I found "' + emp.matchedName + '" (' + emp.position + ', ' + emp.department + ') in our records. ' +
+        'Is this you? Reply "yes" to auto-fill your details, or "no" to enter them manually.';
+      return { reply: confirmMsg, session };
+    }
   } else if (step.key === 'department') {
     session.formData[step.key] = message;
-    // Auto-fill supervisor from Departments sheet
-    const lookup = lookupDepartment(message);
+    // Auto-fill supervisor; falls back to Campus Director for Chief-level positions
+    const lookup = resolveAutoSupervisor(session.formData.position || '', message);
     if (lookup && lookup.supervisorName) {
       session.formData.supervisor      = lookup.supervisorName;
       session.formData.supervisorEmail = lookup.supervisorEmail;
@@ -371,40 +488,68 @@ function handleFormStep(message, session) {
     session.formData[step.key] = message;
   }
 
+  // After collecting description in a quick-start flow, show the form intro
+  // message before asking for the user's name (next step).
+  const justFinishedDescription = session.quickStartSteps && step.key === 'description';
+
   session.step++;
 
-  // Skip steps that are already pre-filled (e.g. description from chat)
+  // Skip steps that are already pre-filled
   while (
-    session.step < FORM_STEPS.length &&
-    FORM_STEPS[session.step].skippable &&
-    session.formData[FORM_STEPS[session.step].key]
+    session.step < steps.length &&
+    steps[session.step].skippable &&
+    session.formData[steps[session.step].key]
   ) {
     session.step++;
   }
 
-  if (session.step < FORM_STEPS.length) {
-    return { reply: getNextPrompt(session), session };
+  if (session.step < steps.length) {
+    const note       = session.formData._nameNote || null;
+    delete session.formData._nameNote;
+    const nextPrompt = getNextPrompt(session);
+
+    // Build reply bubbles; inject form intro between description and name steps
+    const bubbles = [];
+    if (justFinishedDescription) {
+      bubbles.push(
+        'I\'ll need a few details to fill out the IT Job Request Form. ' +
+        'Once submitted, your supervisor will receive an approval email — then IT staff will be notified to take action.'
+      );
+    }
+    if (note) bubbles.push(note);
+    bubbles.push(nextPrompt);
+
+    const reply = bubbles.join('\n\n');
+    return bubbles.length > 1
+      ? { reply, replies: bubbles, session }
+      : { reply, session };
   }
 
   // All fields collected — show confirmation
   session.state = 'confirm';
-  return { reply: buildConfirmationMessage(session.formData), session };
+  const note = session.formData._nameNote || null;
+  delete session.formData._nameNote;
+  const confirmMsg = buildConfirmationMessage(session.formData);
+  if (note) {
+    return { reply: note + '\n\n' + confirmMsg, replies: [note, confirmMsg], session };
+  }
+  return { reply: confirmMsg, session };
 }
 
 /**
- * Returns the prompt for the current step.
+ * Returns the prompt for the current step, skipping already-filled skippable steps.
  */
 function getNextPrompt(session) {
-  // Skip already-filled skippable steps
+  const steps = session.quickStartSteps ? QUICK_START_FORM_STEPS : FORM_STEPS;
   while (
-    session.step < FORM_STEPS.length &&
-    FORM_STEPS[session.step].skippable &&
-    session.formData[FORM_STEPS[session.step].key]
+    session.step < steps.length &&
+    steps[session.step].skippable &&
+    session.formData[steps[session.step].key]
   ) {
     session.step++;
   }
-  if (session.step >= FORM_STEPS.length) return null;
-  return FORM_STEPS[session.step].prompt;
+  if (session.step >= steps.length) return null;
+  return steps[session.step].prompt;
 }
 
 /**
@@ -435,6 +580,56 @@ function handleConfirm(message, session) {
       buildConfirmationMessage(session.formData),
     session,
   };
+}
+
+/**
+ * Handles the confirm_name state — user is asked to confirm whether the
+ * employee record found by lookupEmployee() matches them.
+ * "yes" → auto-fills position, department, and supervisor, then advances.
+ * "no"  → clears pending data and asks the user to enter their details manually.
+ */
+function handleConfirmName(message, session) {
+  const lower = message.toLowerCase().trim();
+  const emp   = session.pendingEmployee;
+  delete session.pendingEmployee;
+  session.state = 'collecting'; // resume collecting
+
+  const isYes = lower === 'yes' || lower === 'y';
+
+  if (isYes) {
+    // Apply auto-fill from the matched employee record
+    session.formData.position   = emp.position;
+    session.formData.department = emp.department;
+    // resolveAutoSupervisor tries the Departments sheet first; falls back to the
+    // Campus Director for Chief-level positions with no department entry.
+    const supLookup = resolveAutoSupervisor(emp.position, emp.department);
+    if (supLookup && supLookup.supervisorName) {
+      session.formData.supervisor      = supLookup.supervisorName;
+      session.formData.supervisorEmail = supLookup.supervisorEmail;
+    }
+  }
+
+  // Advance past the name step (step was held while waiting for confirmation)
+  session.step++;
+  // getNextPrompt() skips over any pre-filled skippable steps
+  const nextPrompt = getNextPrompt(session);
+
+  if (!nextPrompt) {
+    // All steps complete — go to submission confirmation
+    session.state = 'confirm';
+    const confirmMsg = buildConfirmationMessage(session.formData);
+    if (isYes) {
+      const note = 'Got it! I\'ve pre-filled your details.';
+      return { reply: note + '\n\n' + confirmMsg, replies: [note, confirmMsg], session };
+    }
+    return { reply: confirmMsg, session };
+  }
+
+  if (isYes) {
+    const note = 'Got it! I\'ve pre-filled your details.';
+    return { reply: note + '\n\n' + nextPrompt, replies: [note, nextPrompt], session };
+  }
+  return { reply: nextPrompt, session };
 }
 
 function buildConfirmationMessage(data) {
@@ -521,27 +716,40 @@ function callGemini(message, history, kbContext) {
     'You are the IT Support Chatbot for PSHS Zamboanga Regional Campus (PSHS ZRC). ' +
     'You help staff troubleshoot IT issues and file IT Job Request Forms (ITJRF).\n\n' +
 
-    'Behavior rules:\n' +
+    // ── CRITICAL OVERRIDES — read these first, they override everything else ──
+    'CRITICAL OVERRIDES (apply before all other rules):\n\n' +
+
+    'OVERRIDE A — Publication / design / information requests:\n' +
+    'The IT Unit is also the designated Information Officers of PSHS ZRC, so they handle ALL publication and design work.\n' +
+    'Trigger words: poster, tarpaulin, tarps, pubmat, design, layout, social media, facebook, post, certificate, announcement, publication, graphic, infographic, flyer, banner.\n' +
+    'WHEN ANY of these words appear in the request — even in passing — you MUST:\n' +
+    '  1. Write EXACTLY ONE short sentence acknowledging the request. Example: "Got it, I\'ll file a request for your poster design."\n' +
+    '  2. IMMEDIATELY end your reply with: %%FILE_TICKET:<one-sentence description>%%\n' +
+    'NEVER ask for design details, event info, dimensions, content, deadline, or any other specifics.\n' +
+    'NEVER ask for Name / Position / Department / Supervisor — the form collects those automatically.\n' +
+    'NEVER give a normal chat reply — acknowledgment sentence + signal, nothing else.\n\n' +
+
+    'OVERRIDE B — User says they already sent details or already talked to IT:\n' +
+    'Trigger phrases: "I already sent", "I sent", "already told IT", "already talked to IT", "I emailed IT", "already gave the details", "already reported".\n' +
+    'WHEN any of these appear — you MUST:\n' +
+    '  1. Reply with EXACTLY this sentence: "Noted — I still need to file an official IT Job Request Form as the record for this request."\n' +
+    '  2. IMMEDIATELY end your reply with: %%FILE_TICKET:<one-sentence description>%%\n' +
+    'NEVER just say "thank you" or "noted" and stop — always file the ticket.\n' +
+    'NEVER ask for Name / Position / Department / Supervisor — the form collects those automatically.\n\n' +
+
+    // ── General rules ──
+    'General rules:\n' +
     '1. Be concise, professional, and friendly.\n' +
     '2. When answering technical questions, use the Knowledge Base entries provided.\n' +
     '3. If no KB entry is relevant, use your own knowledge to help troubleshoot.\n' +
     '4. When the issue clearly requires IT intervention OR the user confirms they want to file a request, ' +
-       'end your reply with the exact signal: %%FILE_TICKET:<one-sentence summary of the problem>%% — do not mention this signal to the user in the visible part of your reply. ' +
-       'IMPORTANT RULES for this signal:\n' +
-       '   a. Send it AS SOON AS the problem is understood and IT action is needed — do NOT ask the user for their name, position, department, or supervisor first. The chatbot form will collect those details automatically after the signal is sent.\n' +
-       '   b. NEVER include this signal in the same reply where you are still asking troubleshooting questions about the technical problem itself (e.g. asking what error message they see, whether a cable is connected). Only ask those questions if you genuinely need more info before knowing whether IT action is required.\n' +
-       '   c. If you are still diagnosing the technical issue, do NOT send the signal yet — wait for the user\'s answer first. But once it is clear that the issue requires IT work, send the signal immediately.\n' +
+       'end your reply with: %%FILE_TICKET:<one-sentence summary of the problem>%% — do not mention this signal to the user.\n' +
+       '   a. Send it AS SOON AS the problem is understood — do NOT ask for name, position, department, or supervisor first.\n' +
+       '   b. NEVER send it in the same reply where you are still asking diagnostic questions.\n' +
+       '   c. Once IT action is clearly needed, send the signal immediately.\n' +
     '5. Do not make up ticket numbers or form details.\n' +
-    '6. You handle IT support AND information/publication requests (graphic design, pubmat, social media posting, tarpaulin, certificates, announcements) since the IT unit also serves as the designated Information Officers of PSHS ZRC. ' +
-       'For ANY publication or design request: write ONE short sentence acknowledging it (e.g. "Got it, I\'ll file a request for your poster design."), then IMMEDIATELY end your reply with %%FILE_TICKET:<description>%%. ' +
-       'Do NOT ask for design details, event info, dimensions, content, or any specifics — the IT staff will coordinate those details directly with the requester after the ticket is filed. ' +
-       'NEVER list out Name / Position / Department / Supervisor — the chatbot form collects those automatically.\n' +
-    '7. The IT Job Request Form (ITJRF) is REQUIRED for ALL IT services — it is the official record-keeping document. ' +
-       'If a user says they have already sent details to IT, or already talked to IT staff, STILL file a ticket. ' +
-       'Reply with one sentence: "Noted — I still need to file an official IT Job Request Form as the record for this request." then IMMEDIATELY send %%FILE_TICKET:<description>%%. ' +
-       'Do NOT list Name / Position / Department / Supervisor — the form collects those automatically.\n' +
-    '8. This chatbot does NOT support file uploads or attachments. If a user mentions attaching or uploading files, politely inform them that files cannot be submitted here and ask them to describe their request in text instead.\n' +
-    '9. CCTV viewing requests are governed by the Data Privacy Act. When a user asks about CCTV viewing, your FIRST response must: (a) inform the user that they need to prepare a formal letter addressed to the Campus Director containing the exact date, time range, camera location, and reason for the footage review, and that the Campus Director must approve this letter before IT can proceed. Do NOT ask for CCTV details — the user puts those in the letter, not in the ticket. After giving this instruction, end your reply with the %%FILE_TICKET%% signal so the chatbot proceeds to collect the user\'s name, position, department, and supervisor for the IT Job Request ticket.\n\n' +
+    '6. This chatbot does NOT support file uploads. If a user mentions attaching files, inform them and ask them to describe in text.\n' +
+    '7. CCTV viewing requests are governed by the Data Privacy Act. First inform the user they need a formal letter to the Campus Director with the exact date, time range, camera location, and reason — the Director must approve before IT can proceed. Do NOT ask for CCTV details. Then end with %%FILE_TICKET:<description>%%.\n\n' +
 
     'ITJRF Recommendation Types (for reference):\n' +
     RECOMMENDATION_TYPES.map((t, i) => `${i + 1}. ${t}`).join('\n');
@@ -1066,9 +1274,10 @@ function getStaffEmail(name) {
 
 /**
  * Looks up a department/office in the Departments sheet.
- * Returns { supervisorName, supervisorEmail } or null if not found.
+ * Returns { supervisorName, supervisorEmail, fullName } or null if not found.
+ * Matches on col A (abbreviated code) OR col D (full office name).
  *
- * Sheet columns: A = Department/Office | B = Supervisor Name | C = Supervisor Email
+ * Sheet columns: A = Department/Office | B = Supervisor Name | C = Supervisor Email | D = Full Name
  */
 function lookupDepartment(dept) {
   if (!dept) return null;
@@ -1079,16 +1288,114 @@ function lookupDepartment(dept) {
     const data  = sheet.getDataRange().getValues();
     const lower = String(dept).toLowerCase().trim();
     for (let i = 1; i < data.length; i++) {
-      if (String(data[i][0]).toLowerCase().trim() === lower) {
+      const abbrev   = String(data[i][0] || '').toLowerCase().trim();
+      const fullName = String(data[i][3] || '').toLowerCase().trim();
+      if (abbrev === lower || fullName === lower) {
         return {
           supervisorName:  String(data[i][1] || ''),
           supervisorEmail: String(data[i][2] || ''),
+          fullName:        String(data[i][3] || ''),
         };
       }
     }
     return null;
   } catch (err) {
     Logger.log('lookupDepartment error: ' + err);
+    return null;
+  }
+}
+
+/**
+ * Resolves supervisor name + email from a department code.
+ * Falls back to the Campus Director for Chief-level positions
+ * when the department code has no matching entry in the Departments sheet.
+ * This covers division heads (e.g. Milo S. Saldon, Mary Sheryl M. Saldon-Raznee,
+ * Keisel Van Valerie V. Gamil) who report directly to the Campus Director.
+ *
+ * @param {string} position   - Employee position title (used for the Chief fallback check)
+ * @param {string} department - Department/Office code from the Employees sheet
+ * @returns {{ supervisorName, supervisorEmail, fullName } | null}
+ */
+function resolveAutoSupervisor(position, department) {
+  // 1. Try the Departments sheet first
+  const deptLookup = lookupDepartment(department);
+  if (deptLookup && deptLookup.supervisorName) return deptLookup;
+
+  // 2. Chief-level positions report directly to the Campus Director
+  if (position && /chief/i.test(String(position))) {
+    const directorEmail = PropertiesService.getScriptProperties().getProperty('DIRECTOR_EMAIL') || '';
+    return {
+      supervisorName:  'Edman H. Gallamaso',
+      supervisorEmail: directorEmail,
+      fullName:        'Campus Director',
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Looks up an employee by name in the Employees sheet.
+ * Returns { position, department, matchedName, fuzzy } or null if not found.
+ *
+ * Matching strategy:
+ *   1. Exact match (case-insensitive).
+ *   2. Fuzzy match — if the user typed ≥2 words, check whether every typed word appears
+ *      in the employee's name words. Only used when exactly 1 candidate is found
+ *      (avoids false positives when multiple employees share a word).
+ *
+ * Sheet columns: A = Name | B = Position | C = Department/Office
+ * Department/Office in col C should match the abbreviated code in the Departments sheet col A.
+ */
+function lookupEmployee(name) {
+  if (!name) return null;
+  try {
+    const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const sheet = ss.getSheetByName('Employees');
+    if (!sheet) return null;
+    const data  = sheet.getDataRange().getValues();
+    const lower = String(name).toLowerCase().trim();
+
+    // Helper: normalize a name string into an array of lowercase word tokens
+    const tokenize = str => String(str).toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter(Boolean);
+
+    // 1. Exact match
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][0]).toLowerCase().trim() === lower) {
+        return {
+          matchedName: String(data[i][0]),
+          position:    String(data[i][1] || ''),
+          department:  String(data[i][2] || ''),
+          fuzzy:       false,
+        };
+      }
+    }
+
+    // 2. Fuzzy match — only attempt when the user typed ≥2 words
+    const inputWords = tokenize(lower);
+    if (inputWords.length < 2) return null;
+
+    const candidates = [];
+    for (let i = 1; i < data.length; i++) {
+      const empWords = tokenize(data[i][0]);
+      // All words the user typed must appear somewhere in the employee's name
+      if (inputWords.every(w => empWords.includes(w))) {
+        candidates.push(i);
+      }
+    }
+
+    // Only auto-fill if exactly one candidate — multiple matches are ambiguous
+    if (candidates.length !== 1) return null;
+
+    const idx = candidates[0];
+    return {
+      matchedName: String(data[idx][0]),
+      position:    String(data[idx][1] || ''),
+      department:  String(data[idx][2] || ''),
+      fuzzy:       true,
+    };
+  } catch (err) {
+    Logger.log('lookupEmployee error: ' + err);
     return null;
   }
 }
