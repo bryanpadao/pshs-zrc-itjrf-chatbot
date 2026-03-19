@@ -290,22 +290,21 @@ const MAX_MESSAGE_LENGTH       = 1000;  // max characters accepted per user mess
 ### Entry points
 - **`doGet(e)`** — serves `Index.html` by default; `Dashboard.html` when `?page=dashboard`; routes to `handleApproval()` when `?token=X&action=Y`
 - **`doPost(e)`** — routes to `handleChat`, `handleFormStep`, `handleConfirmName`, `handleConfirm`, or `handleCctvLetterCheck` based on `session.state`
-- **`processChat(params)`** — called from `Index.html` via `google.script.run`; accepts `{ message, sessionId, userIdentity? }`; sanitizes input; loads/saves session via CacheService; enforces per-session message limit; pre-fills identity fields from `userIdentity` on first call if provided
+- **`processChat(params)`** — called from `Index.html` via `google.script.run`; accepts `{ message, sessionId, userIdentity?, quickStart? }`; sanitizes input; loads/saves session via CacheService; enforces per-session message limit; pre-fills identity fields from `userIdentity` on first call if provided; if `quickStart` key is set (e.g. `'publication'`, `'cctv'`, `'technical'`), routes directly to `handleQuickStart()` skipping Gemini
 
 ### Quick-start buttons (Index.html landing)
 
-Before the chat input is enabled, the user sees **5** option buttons. Input is disabled until a choice is made.
+After identity is resolved, the user sees **5** option buttons. The input textarea is enabled immediately after identity resolves (before any button is clicked), so users can also type directly.
 
 | Button | Key | Behavior |
 |--------|-----|----------|
-| 💻 IT Issue / Repair | `it_issue` | Enables input; normal Gemini chat flow |
-| 🎨 Publication / Design | `publication` | Asks for request details first → user describes or says "already sent" → intro + name → auto-fill → confirmation. `recType = 'Others, Repair'` |
-| 📷 CCTV Viewing Request | `cctv` | Shows Data Privacy Act letter requirement + asks for brief description → intro + name → auto-fill → confirmation. `recType = 'Others, Repair'` |
-| 🔧 Technical Assistance | `technical` | Asks for assistance details first → user describes → intro + name → auto-fill → confirmation. `recType = 'Others, Repair'` |
+| 💻 IT Issue / Repair | `it_issue` | Enables input; normal Gemini chat flow (troubleshoot first, file ticket when needed) |
+| 🎨 Publication / Design | `publication` | Asks for description → auto-files ticket (identity pre-filled). `recType = 'Others, Repair'` |
+| 📷 CCTV Viewing Request | `cctv` | Shows Data Privacy Act letter gate first; if approved → asks for description → auto-files. `recType = 'Others, Repair'` |
+| 🔧 Technical Assistance | `technical` | Asks for description → auto-files ticket (identity pre-filled). `recType = 'Others, Repair'` |
+| ❓ Ask a Question | `question` | Enables input; normal Gemini chat flow (same behavior as IT Issue / Repair) |
 
-> "❓ Ask a Question" button was removed. IT Issue / Repair already covers free-form chat.
-
-`handleQuickStart(type, session)` — sets `session.quickStartSteps = true`, `session.quickStartType = type` (so cancel can restart the same flow), and `session.quickStartLabel` (e.g. `'Technical Assistance'` — prefixed to the description on save). Uses `QUICK_START_FORM_STEPS` (description → name → position → department → supervisor). Returns the description prompt immediately (customised per type); the form intro message is injected after the description answer is collected, just before the name step. CCTV also prepends the Data Privacy Act note before the description prompt.
+`handleQuickStart(type, session)` — sets `session.quickStartSteps = true`, `session.quickStartType = type` (so cancel can restart the same flow), and `session.quickStartLabel` (e.g. `'Technical Assistance'` — prefixed to the description on save). Uses `QUICK_START_FORM_STEPS` (description only — identity is already pre-filled from Google account). Returns the description prompt immediately (customised per type); if identity is verified, the ticket is auto-filed as soon as description is collected (no confirmation step). CCTV goes through `cctv_letter_check` state first before collecting the description.
 
 **Cancel restarts the same quick-start flow:** When the user says "no" at the confirmation step and the ticket came from a quick-start button, `handleConfirm()` calls `handleQuickStart(session.quickStartType, {})` and restarts from the description question — it does NOT reset to neutral.
 
@@ -315,19 +314,21 @@ Client sends only `sessionId` (opaque UUID). Session object lives in `CacheServi
 
 | `session.state` | Handler | Description |
 |-----------------|---------|-------------|
-| _(none)_ | `handleChat()` | RAG + Gemini; detects `%%FILE_TICKET:<desc>%%` signal |
-| `'collecting'` | `handleFormStep()` | Walks through FORM_STEPS; gibberish detection on structured fields |
-| `'confirm_name'` | `handleConfirmName()` | Asks user to confirm employee lookup result before auto-filling |
-| `'confirm'` | `handleConfirm()` | Waits for yes/no; on yes → `saveTicket()` + locks chat UI |
+| _(none)_ | `handleChat()` | RAG + Gemini; detects `%%FILE_TICKET:<desc>%%` signal; auto-files immediately when identity is verified |
+| `'collecting'` | `handleFormStep()` | Collects description (only step in FORM_STEPS/QUICK_START_FORM_STEPS); gibberish detection on structured fields |
+| `'cctv_letter_check'` | `handleCctvLetterCheck()` | CCTV gate: confirms Director-approved letter before allowing description collection |
+| `'confirm_name'` | `handleConfirmName()` | Asks user to confirm employee lookup result before auto-filling (fallback only — not triggered in normal flow since identity comes from Google account) |
+| `'confirm'` | `handleConfirm()` | Waits for yes/no; on yes → `saveTicket()` + locks chat UI (fallback only — used when identity was NOT pre-filled) |
+
+**Auto-file behavior:** When `session.identityVerified` is true (normal case — identity was resolved from Google account on page load), tickets are **filed immediately** after the description is collected — no confirmation step is shown. The `'confirm'` state is only reached as a fallback if identity is somehow not pre-filled.
 
 ### Form steps (FORM_STEPS array) — service location and rec type set by IT staff on Dashboard
 
-Each step includes a contextual hint explaining what the field is for and why it's needed.
+`FORM_STEPS` contains only one step:
 
-1. `name` — "What is your full name?" → triggers `lookupEmployee()`; if a match is found, switches to `confirm_name` state (user must confirm before auto-fill is applied)
-1. `description` — "Please describe the problem in detail." *(skippable — pre-filled from chat signal)*
+1. `description` — "Please describe the problem in detail." *(skippable — pre-filled from the Gemini chat signal when `%%FILE_TICKET%%` is detected)*
 
-Identity fields (name/position/department/supervisor) are pre-filled from `getUserIdentity()` on page load — FORM_STEPS now contains only the description step.
+Identity fields (name/position/department/supervisor) are pre-filled from `getUserIdentity()` on page load and stored in `session.formData` before any form step runs. `QUICK_START_FORM_STEPS` is identical — one description step only.
 
 ### CCTV letter gate (`cctv_letter_check` state)
 
@@ -336,20 +337,31 @@ Triggered when user selects the CCTV quick-start button. Handler: `handleCctvLet
 - **No** → explains letter requirement, ends conversation (`submitted: true`), no ticket filed
 - **Unrecognised** → re-asks once (`session.cctvFollowUpAsked = true`), then treats as No
 
-### Pre-fill logic in handleChat()
-When `%%FILE_TICKET%%` is detected, `session.formData.description` is pre-filled from the signal.
+### handleChat() behavior when %%FILE_TICKET%% is detected
 
-An intro message is also returned as the first separate bubble: *"I'll need a few details to fill out the IT Job Request Form. Once submitted, your supervisor will receive an approval email — then IT staff will be notified to take action."*
+When Gemini returns the `%%FILE_TICKET:<desc>%%` signal:
 
-Additionally, if the description contains any of the following keywords, `session.formData.recType` is pre-set to `'Others, Repair'` and written to col G when the ticket is saved:
+**If `session.identityVerified` is true (normal case):**
+1. Calls `buildDescriptionFromHistory(session)` to extract a comprehensive description from the full conversation
+2. Calls `hasEnoughContext(rawDesc)` — if not enough IT context, increments `session.nonsenseCount` and asks for clarification (max 3 strikes, then locks chat)
+3. Calls `paraphraseDescription(rawDesc)` to produce a formal government-style description
+4. Calls `saveTicket()` immediately — no confirmation step shown
+5. Returns the visible Gemini reply + a ticket confirmation summary as separate bubbles; locks the chat on success
+
+**If identity is NOT verified (rare fallback):**
+- Sets `session.state = 'collecting'`, pre-fills description, shows intro message + next form prompt
+
+**`recType` pre-fill:** If the description contains any of the following keywords, `recType` is pre-set to `'Others, Repair'`:
 - CCTV/media: `cctv`, `footage`, `camera`
 - Publication/design: `poster`, `tarpaulin`, `tarps`, `pubmat`, `design`, `layout`, `social media`, `facebook`, `post`, `certificate`, `announcement`, `publication`
 
-**Quick-start description prefix:** In quick-start flows, `session.quickStartLabel` is prepended to whatever the user types for description (e.g. `"Technical Assistance: my laptop won't connect to the projector"`). This ensures the ticket clearly identifies the request type.
+**`session.nonsenseCount`** — unified counter in `handleChat()` that increments on both gibberish messages AND messages with insufficient IT context (`hasEnoughContext()` returns false). 3 combined strikes from any mix ends the conversation with a joke + `submitted: true`. Separate from `session.gibberishCount` which is used only in `handleFormStep()` for structured fields.
 
-### Gibberish detection in handleFormStep()
+**Quick-start description prefix:** In quick-start flows, `session.quickStartLabel` is prepended to the raw description before paraphrasing (e.g. `"Technical Assistance: my laptop won't connect to the projector"`). This ensures the ticket clearly identifies the request type.
 
-Applied to structured fields only: `name`, `position`, `department`, `supervisor`. Description is skipped (free-form text).
+### Gibberish detection
+
+**In `handleFormStep()`** — applied to structured fields only: `name`, `position`, `department`, `supervisor`. Description is skipped (free-form text).
 
 `isGibberish(text)` returns true if any of these conditions hold:
 1. The whole string (with up to 3 trailing chars) is one repeating 2–4 char n-gram (e.g. `asdasdasd`, `vcvcvcvc`)
@@ -418,7 +430,7 @@ Called after name confirmation (yes path) and after manual department entry. Alw
 
 ---
 
-## 9. Gemini system prompt (2 critical overrides + 7 general rules)
+## 9. Gemini system prompt (2 critical overrides + 8 general rules)
 
 The prompt is structured with **CRITICAL OVERRIDES** first — these override everything else. This forces `gemini-2.5-flash-lite` to follow them rather than defaulting to its trained "ask for requirements" behavior.
 
@@ -426,9 +438,11 @@ The prompt is structured with **CRITICAL OVERRIDES** first — these override ev
 CRITICAL OVERRIDES (apply before all other rules):
 
 OVERRIDE A — Publication / design / information requests:
+The IT Unit is also the designated Information Officers of PSHS ZRC — they handle ALL
+publication and design work.
 Trigger words: poster, tarpaulin, tarps, pubmat, design, layout, social media, facebook,
 post, certificate, announcement, publication, graphic, infographic, flyer, banner.
-WHEN ANY of these words appear — MUST:
+WHEN ANY of these words appear — even in passing — MUST:
   1. Write EXACTLY ONE short acknowledgment sentence.
      e.g. "Got it, I'll file a request for your poster design."
   2. IMMEDIATELY end with %%FILE_TICKET:<one-sentence description>%%
@@ -444,22 +458,37 @@ WHEN any of these appear — MUST:
      as the record for this request."
   2. IMMEDIATELY end with %%FILE_TICKET:<one-sentence description>%%
 NEVER just say "thank you" or "noted" and stop.
+NEVER ask for Name / Position / Department / Supervisor.
 
 General rules:
 1. Be concise, professional, and friendly.
 2. When answering technical questions, use the Knowledge Base entries provided.
 3. If no KB entry is relevant, use your own knowledge to help troubleshoot.
-4. When the issue clearly requires IT intervention OR the user confirms they want to file
-   a request, end your reply with %%FILE_TICKET:<one-sentence summary>%%
-   a. Send AS SOON AS the problem is understood — do NOT ask for name/position/dept/supervisor first.
-   b. NEVER send in the same reply as diagnostic questions.
-   c. Once IT action is clearly needed, send immediately.
+4. For IT Issue / Repair requests:
+   a. FIRST provide troubleshooting steps using Knowledge Base entries or your own knowledge.
+   b. Ask the user to try the steps and confirm the result before filing a ticket.
+   c. Only send %%FILE_TICKET:<one-sentence summary>%% when:
+      - The user explicitly asks to file (e.g. "file a ticket", "submit", "i-submit na",
+        "mag-ticket na", "i give up", "please file", "can you file")
+      - The user confirms troubleshooting failed (e.g. "still not working", "hindi pa rin",
+        "wala gihapon", "di pa gumana", "na-try na", "same problem", "wala gyud",
+        "dili pa gumana", "di jud mo-on")
+      - The problem clearly requires physical intervention (hardware broken,
+        needs on-site inspection, requires parts replacement)
+   d. NEVER send %%FILE_TICKET%% in the same reply as troubleshooting questions.
+   e. For Publication, CCTV, and Technical Assistance flows: send %%FILE_TICKET%%
+      immediately after the description is collected — no troubleshooting needed.
 5. Do not make up ticket numbers or form details.
 6. This chatbot does NOT support file uploads. If a user mentions attaching files,
    inform them and ask them to describe in text.
 7. CCTV viewing requests: inform the user they need a formal letter to the Campus
    Director with exact date, time range, camera location, and reason — Director must
    approve before IT can proceed. Do NOT ask for CCTV details. End with %%FILE_TICKET%%.
+8. Language: Understand and respond in Filipino, English, and Bisaya/Cebuano.
+   Detect the user's language and reply in the SAME language or mix if they code-switch.
+   Common Bisaya IT phrases: dili mo-on = won't turn on, dugay kaayo = very slow,
+   wala signal = no connection, na-freeze/natulog = frozen, dili ma-print = can't print,
+   wala gyud = still not working, na-try na nako = I already tried that, etc.
 ```
 
 ---
@@ -487,7 +516,8 @@ Messaging-app style (iMessage/WhatsApp inspired). Primary color: `#1a3c6e` (PSHS
 
 ### Input bar
 - iMessage-style: rounded textarea + circular send button
-- Textarea: `overflow-y: hidden` by default; JS sets `overflowY: auto` only when `scrollHeight > 120px` (prevents scrollbar on short text)
+- Textarea starts **disabled** with placeholder "Choose an option above…"; `enableInput()` is called immediately after `getUserIdentity()` resolves (not after a button is clicked), so users can type as soon as identity is confirmed
+- `overflow-y: hidden` by default; JS sets `overflowY: auto` only when `scrollHeight > 120px` (prevents scrollbar on short text)
 - Font-size `16px` prevents iOS auto-zoom on focus
 
 ### Session / response handling
@@ -592,7 +622,7 @@ ALLOWED_DOMAIN   → (optional) e.g. zrc.pshs.edu.ph — restricts chatbot to th
 |-------|---------------|
 | Apps Script has no memory between requests | Chat session stored in CacheService (30 min TTL); client sends only `sessionId` string |
 | Code edits do not go live automatically | Always create a new deployment version |
-| Gemini mentions files | System prompt rule 8 blocks this |
+| Gemini mentions files | System prompt rule 6 blocks this |
 | First form question combined with Gemini reply | `replies[]` array — UI renders each as separate bubble |
 | Dashboard flickering on auto-refresh | Changed from 10s to 60s; table hides during load |
 | Recommendation not in chatbot | Removed from FORM_STEPS; now set by IT staff in Assess modal |
@@ -601,7 +631,7 @@ ALLOWED_DOMAIN   → (optional) e.g. zrc.pshs.edu.ph — restricts chatbot to th
 | PDF rows expanding | `writeTextBlock` uses word-wrap at 120 chars + WrapStrategy.CLIP + setRowHeight(21) |
 | Others description in PDF | Saved to col O; written to Template cell P25 when recommendation = Others, Repair |
 | Campus Director always same | Hard-coded as `Edman H. Gallamaso` in `generateFormPdf`, written bold to N28 |
-| CCTV viewing requests | Rule 9 in system prompt: bot explains letter-to-CD requirement first, then files ticket. recType pre-set to Others, Repair via keyword detection |
+| CCTV viewing requests | Rule 7 in system prompt: bot explains letter-to-CD requirement first, then files ticket. recType pre-set to Others, Repair via keyword detection |
 | Publication/design requests not triggering ticket / asking for details | `gemini-2.5-flash-lite` ignores numbered rules for these cases. Fixed by promoting to CRITICAL OVERRIDE A at top of system prompt with explicit NEVER/ALWAYS language and trigger word list |
 | Chatbot not filing ticket when user says "sent details to IT" | Same root cause. Fixed by promoting to CRITICAL OVERRIDE B with exact reply sentence required |
 | "Start a New Conversation" breaks in iframe | Uses `resetChat()` JS function instead of `location.reload()` |
@@ -624,7 +654,7 @@ ALLOWED_DOMAIN   → (optional) e.g. zrc.pshs.edu.ph — restricts chatbot to th
 | Cancel at confirmation resets to neutral instead of restarting quick-start | Fixed: `session.quickStartType` is persisted; `handleConfirm()` restarts `handleQuickStart(qsType, {})` on "no" for quick-start flows |
 | Description missing quick-start context label | Fixed: `session.quickStartLabel` is prepended to description (e.g. `"Technical Assistance: ..."`) so IT staff see the request type clearly |
 | Users entering keyboard gibberish in form fields | `isGibberish()` detects repeated patterns, low unique-char ratio, low vowel ratio, or long consonant runs. `handleFormStep()` warns twice, ends with a joke + locks chat on 3rd offence |
-| "Ask a Question" button removed | Redundant — IT Issue / Repair covers the same use case with the Gemini chat flow |
+| "Ask a Question" button present | Still in the UI — routes through the same Gemini chat flow as IT Issue / Repair |
 
 ---
 
