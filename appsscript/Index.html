@@ -351,6 +351,98 @@
 
     .quick-reply-btn:hover  { background: #1a3c6e; color: #fff; }
     .quick-reply-btn:active { background: #0f2550; color: #fff; }
+
+    /* ── My Tickets button ───────────────────────────────────────────────── */
+
+    .my-tickets-btn {
+      display: block;
+      width: calc(100% - 32px);
+      margin: 4px 16px 0;
+      padding: 10px;
+      background: transparent;
+      border: 1.5px solid #1a3c6e;
+      border-radius: 20px;
+      color: #1a3c6e;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      text-align: center;
+      font-family: inherit;
+      transition: background 0.15s;
+    }
+    .my-tickets-btn:hover { background: #f0f4fa; }
+
+    /* ── My Tickets panel ────────────────────────────────────────────────── */
+
+    .my-tickets-panel {
+      position: absolute;
+      inset: 0;
+      background: #f2f2f7;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .my-tickets-panel-header {
+      background: #1a3c6e;
+      color: #fff;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+
+    .my-tickets-panel-header button {
+      background: transparent;
+      border: 1.5px solid rgba(255,255,255,0.5);
+      color: #fff;
+      padding: 4px 12px;
+      border-radius: 14px;
+      cursor: pointer;
+      font-size: 13px;
+      font-family: inherit;
+    }
+
+    .my-tickets-list { flex: 1; overflow-y: auto; padding: 12px; }
+
+    .ticket-item {
+      background: #fff;
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+      cursor: pointer;
+    }
+
+    .ticket-item:hover { background: #f7f8ff; }
+    .ticket-item .ti-jrf { font-size: 11px; color: #888; }
+    .ticket-item .ti-problem { font-size: 14px; font-weight: 500; color: #1a1a1a; margin: 2px 0 6px; }
+    .ticket-item .ti-status { font-size: 12px; color: #1a3c6e; }
+
+    .ticket-detail {
+      background: #fff;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 10px;
+    }
+
+    .ticket-detail p { font-size: 13px; line-height: 1.6; color: #333; }
+
+    .ticket-detail .back-btn {
+      font-size: 12px;
+      color: #1a3c6e;
+      cursor: pointer;
+      text-decoration: underline;
+      margin-bottom: 8px;
+      display: inline-block;
+      background: none;
+      border: none;
+      padding: 0;
+      font-family: inherit;
+    }
   </style>
 </head>
 <body>
@@ -386,7 +478,8 @@
 
     const BOT_AVATAR_URL = 'https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w200';
 
-    let sessionId = ''; // server-side session key
+    let sessionId   = ''; // server-side session key
+    let currentUser = null; // identity from getUserIdentity() — set on load
 
     function lockChat() {
       chatInputEl.classList.add('locked');
@@ -459,6 +552,10 @@
       inputEl.style.height = 'auto';
       showTyping();
 
+      // Pass userIdentity on every message so server can pre-fill on first use
+      const chatParams = { message: text, sessionId: sessionId };
+      if (currentUser) chatParams.userIdentity = currentUser;
+
       google.script.run
         .withSuccessHandler(function(response) {
           hideTyping();
@@ -475,7 +572,7 @@
           addMessage('Sorry, something went wrong. Please try again.', 'bot');
           console.error(err);
         })
-        .processChat({ message: text, sessionId: sessionId });
+        .processChat(chatParams);
     }
 
     sendBtn.addEventListener('click', sendMessage);
@@ -504,6 +601,7 @@
         { label: '🎨  Publication / Design',    key: 'publication' },
         { label: '📷  CCTV Viewing Request',    key: 'cctv'        },
         { label: '🔧  Technical Assistance',    key: 'technical'   },
+        { label: '❓  Ask a Question',          key: 'question'    },
       ];
 
       const container = document.createElement('div');
@@ -519,14 +617,26 @@
       });
 
       messagesEl.appendChild(container);
+
+      // My Tickets button — only for verified employees
+      if (currentUser && currentUser.name) {
+        const myTicketsBtn = document.createElement('button');
+        myTicketsBtn.className = 'my-tickets-btn';
+        myTicketsBtn.textContent = '📋 My Tickets';
+        myTicketsBtn.onclick = openMyTickets;
+        messagesEl.appendChild(myTicketsBtn);
+      }
+
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
     /* Called when user taps one of the option buttons */
     function handleQuickReply(key, label) {
-      // Remove the buttons
+      // Remove the buttons and My Tickets button
       const container = document.getElementById('quick-replies');
       if (container) container.remove();
+      const myTicketsBtn = document.querySelector('.my-tickets-btn');
+      if (myTicketsBtn) myTicketsBtn.remove();
 
       // Show the user's choice as a bubble
       addMessage(label, 'user');
@@ -535,11 +645,17 @@
       inputEl.disabled = false;
       inputEl.placeholder = 'Message';
 
-      if (key === 'it_issue') {
-        addMessage('Sure! Please describe the IT issue you\'re experiencing and I\'ll help troubleshoot.', 'bot');
+      if (key === 'it_issue' || key === 'question') {
+        if (key === 'it_issue') {
+          addMessage('Sure! Please describe the IT issue you\'re experiencing and I\'ll help troubleshoot.', 'bot');
+        } else {
+          addMessage('Sure! What would you like to know?', 'bot');
+        }
       } else {
         // Direct form — skip Gemini entirely, start form collection on the server
         showTyping();
+        const quickParams = { message: '', sessionId: sessionId, quickStart: key };
+        if (currentUser) quickParams.userIdentity = currentUser;
         google.script.run
           .withSuccessHandler(function(response) {
             hideTyping();
@@ -555,7 +671,7 @@
             addMessage('Sorry, something went wrong. Please try again.', 'bot');
             console.error(err);
           })
-          .processChat({ message: '', sessionId: sessionId, quickStart: key });
+          .processChat(quickParams);
       }
     }
 
@@ -567,14 +683,240 @@
       inputEl.placeholder = 'Choose an option above…';
       chatInputEl.style.display = '';
       newChatBar.style.display = 'none';
-      addMessage(GREETING, 'bot');
+      // Show personalized greeting if user is known, otherwise generic
+      if (currentUser && currentUser.name) {
+        const firstName = currentUser.name.split(' ')[0];
+        addMessage('Hi, ' + firstName + '! 👋 How can I help you today?', 'bot');
+      } else {
+        addMessage(GREETING, 'bot');
+      }
       showQuickReplies();
     }
 
-    // Greeting + option buttons on load
-    window.addEventListener('load', function() {
-      addMessage(GREETING, 'bot');
+    function enableInput() {
+      inputEl.disabled = false;
+      inputEl.placeholder = 'Message';
+    }
+
+    function scrollToBottom() {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    // ── Identity resolution ────────────────────────────────────────────────
+
+    function initChat() {
+      // Show a loading bubble while resolving identity
+      const loadingRow = document.createElement('div');
+      loadingRow.className = 'msg-row bot-row';
+      loadingRow.id = 'identity-loading-row';
+      const loadingAvatar = document.createElement('div');
+      loadingAvatar.className = 'bot-avatar';
+      loadingAvatar.innerHTML = '<img src="' + BOT_AVATAR_URL + '" alt="bot">';
+      const loadingBubble = document.createElement('div');
+      loadingBubble.className = 'message bot';
+      loadingBubble.textContent = 'Loading…';
+      loadingRow.appendChild(loadingAvatar);
+      loadingRow.appendChild(loadingBubble);
+      messagesEl.appendChild(loadingRow);
+
+      google.script.run
+        .withSuccessHandler(onIdentityResolved)
+        .withFailureHandler(function() { onIdentityResolved({ error: 'not_signed_in' }); })
+        .getUserIdentity();
+    }
+
+    function onIdentityResolved(identity) {
+      // Remove loading bubble
+      const loadingRow = document.getElementById('identity-loading-row');
+      if (loadingRow) loadingRow.remove();
+
+      if (identity.error === 'not_signed_in') {
+        showFullScreenMessage(
+          'Please sign in with your PSHS ZRC Google account to use this chatbot.',
+          'Sign in with Google',
+          function() { location.reload(); }
+        );
+        return;
+      }
+
+      if (identity.error === 'wrong_domain') {
+        showFullScreenMessage(
+          'This chatbot is only for PSHS ZRC staff. Please sign in with your @' + identity.domain + ' school account.',
+          'Sign in with a different account',
+          function() { window.open('https://accounts.google.com/signout'); setTimeout(function(){ location.reload(); }, 1000); }
+        );
+        return;
+      }
+
+      if (identity.error === 'not_in_employees') {
+        showFullScreenMessage(
+          'Access denied. Your account (' + (identity.email || '') + ') is not registered in the PSHS ZRC employee records. ' +
+          'Contact the IT unit to have your record added.',
+          'Sign in with a different account',
+          function() { window.open('https://accounts.google.com/signout'); setTimeout(function(){ location.reload(); }, 1000); }
+        );
+        return;
+      }
+
+      // Success — identity found
+      currentUser = identity;
+      const firstName = identity.name ? identity.name.split(' ')[0] : 'there';
+      addMessage('Hi, ' + firstName + '! 👋 I\'m the PSHS ZRC IT Help Desk assistant. How can I help you today?', 'bot');
+
+      // Enable input immediately so the user can type without waiting or clicking a button
+      enableInput();
+
+      // Check for ticket updates before showing quick-start buttons
+      google.script.run
+        .withSuccessHandler(onTicketUpdatesReceived)
+        .withFailureHandler(function() { showQuickReplies(); })
+        .getTicketUpdates(identity.email);
+    }
+
+    function showFullScreenMessage(message, buttonText, buttonAction) {
+      const container = document.querySelector('.chat-container');
+      container.innerHTML = '';
+      const div = document.createElement('div');
+      div.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:32px;text-align:center;gap:16px;';
+      const p = document.createElement('p');
+      p.style.cssText = 'font-size:15px;color:#333;line-height:1.5;max-width:320px;';
+      p.textContent = message;
+      const btn = document.createElement('button');
+      btn.textContent = buttonText;
+      btn.style.cssText = 'padding:12px 24px;background:#1a3c6e;color:#fff;border:none;border-radius:24px;font-size:15px;cursor:pointer;font-family:inherit;';
+      btn.onclick = buttonAction;
+      div.appendChild(p);
+      div.appendChild(btn);
+      container.appendChild(div);
+    }
+
+    function onTicketUpdatesReceived(updates) {
+      if (updates && updates.length > 0) {
+        const cacheKey = 'pshs_ticket_cache_' + (currentUser && currentUser.email ? currentUser.email : '');
+        let lastCache = {};
+        try { lastCache = JSON.parse(localStorage.getItem(cacheKey) || '{}'); } catch(e) {}
+
+        const changed = updates.filter(function(t) { return lastCache[t.jrfNo] !== t.status; });
+
+        if (changed.length > 0) {
+          addMessage('Here\'s an update on your recent IT requests:', 'bot');
+          changed.forEach(function(t) {
+            let statusLine = '';
+            if (t.status === 'Pending IT Assessment') statusLine = '⏳ Waiting for IT staff assessment';
+            else if (t.status === 'Pending Director Approval') statusLine = '⏳ Waiting for Campus Director approval';
+            else if (t.status === 'In Progress') statusLine = '🔧 Being worked on by ' + (t.assignedStaff || 'IT staff') + (t.targetDate ? ' — target: ' + t.targetDate : '');
+            else if (t.status === 'Completed') statusLine = '✅ Resolved on ' + (t.dateCompleted || '—');
+            else if (t.status === 'Rejected') statusLine = '❌ Request was not approved';
+            else statusLine = t.status;
+
+            const problem = t.problem.length > 60 ? t.problem.substring(0, 60) + '…' : t.problem;
+            addMessage('📋 Ticket #' + t.jrfNo + ' — ' + problem + '\n' + statusLine, 'bot');
+          });
+          addMessage('Let me know if you have a new request or need help.', 'bot');
+
+          // Update cache
+          updates.forEach(function(t) { lastCache[t.jrfNo] = t.status; });
+          try { localStorage.setItem(cacheKey, JSON.stringify(lastCache)); } catch(e) {}
+        }
+      }
       showQuickReplies();
+    }
+
+    // ── My Tickets panel ────────────────────────────────────────────────────
+
+    function openMyTickets() {
+      google.script.run
+        .withSuccessHandler(renderMyTicketsPanel)
+        .withFailureHandler(function(err) { alert('Could not load tickets: ' + (err && err.message ? err.message : err)); })
+        .getMyTickets(currentUser.email);
+    }
+
+    function renderMyTicketsPanel(tickets) {
+      const container = document.querySelector('.chat-container');
+      // Remove existing panel if any
+      const existing = document.getElementById('my-tickets-panel');
+      if (existing) existing.remove();
+
+      const panel = document.createElement('div');
+      panel.className = 'my-tickets-panel';
+      panel.id = 'my-tickets-panel';
+
+      const header = document.createElement('div');
+      header.className = 'my-tickets-panel-header';
+      const headerTitle = document.createElement('span');
+      headerTitle.textContent = '📋 My IT Tickets';
+      header.appendChild(headerTitle);
+      const backBtn = document.createElement('button');
+      backBtn.textContent = '← Back to Chat';
+      backBtn.onclick = function() { panel.remove(); };
+      header.appendChild(backBtn);
+      panel.appendChild(header);
+
+      const list = document.createElement('div');
+      list.className = 'my-tickets-list';
+      list.id = 'my-tickets-list';
+
+      if (!tickets || tickets.length === 0) {
+        list.innerHTML = '<p style="text-align:center;color:#888;padding:32px;font-size:14px;">No tickets found.</p>';
+      } else {
+        tickets.forEach(function(t) {
+          const item = document.createElement('div');
+          item.className = 'ticket-item';
+          const problem = t.problem.length > 60 ? t.problem.substring(0, 60) + '…' : t.problem;
+          item.innerHTML =
+            '<div class="ti-jrf">JRF #' + escHtml(t.jrfNo) + ' &nbsp;·&nbsp; ' + escHtml(t.date) + '</div>' +
+            '<div class="ti-problem">' + escHtml(problem) + '</div>' +
+            '<div class="ti-status">' + escHtml(t.status) + '</div>';
+          item.onclick = function() { showTicketDetail(list, t, tickets); };
+          list.appendChild(item);
+        });
+      }
+
+      panel.appendChild(list);
+      container.appendChild(panel);
+    }
+
+    function showTicketDetail(list, t, allTickets) {
+      list.innerHTML = '';
+      const detail = document.createElement('div');
+      detail.className = 'ticket-detail';
+
+      const backBtn = document.createElement('button');
+      backBtn.className = 'back-btn';
+      backBtn.textContent = '← Back to list';
+      backBtn.onclick = function() { renderMyTicketsPanel(allTickets); };
+      detail.appendChild(backBtn);
+
+      const fields = [
+        ['JRF #:', t.jrfNo],
+        ['Date:', t.date],
+        ['Status:', t.status],
+        ['Problem:', t.problem],
+      ];
+      if (t.assignedStaff) fields.push(['Assigned to:', t.assignedStaff]);
+      if (t.targetDate)    fields.push(['Target date:', t.targetDate]);
+      if (t.dateCompleted) fields.push(['Completed:', t.dateCompleted]);
+
+      fields.forEach(function(f) {
+        const p = document.createElement('p');
+        p.innerHTML = '<strong>' + escHtml(f[0]) + '</strong> ' + escHtml(f[1]);
+        detail.appendChild(p);
+      });
+
+      list.appendChild(detail);
+    }
+
+    function escHtml(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    // Greeting + option buttons on load — replaced by identity-aware initChat()
+    window.addEventListener('load', function() {
+      initChat();
     });
   </script>
 </body>

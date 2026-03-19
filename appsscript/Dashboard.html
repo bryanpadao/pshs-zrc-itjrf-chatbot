@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PSHS ZRC IT Dashboard</title>
   <link rel="icon" type="image/png" href="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w64">
+  <!-- Login flicker fix: hide access-denied overlay instantly if authorized flag is set -->
+  <script>
+    (function() {
+      if (sessionStorage.getItem('dashAuthorized') === '1') {
+        document.documentElement.classList.add('is-authorized');
+      }
+    })();
+  </script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -401,6 +409,32 @@
       flex-shrink: 0;
     }
 
+    /* Sortable column headers */
+    thead th.sortable { cursor: pointer; user-select: none; }
+    thead th.sortable:hover { background: #255090; }
+    thead th.sortable .sort-icon { margin-left: 4px; opacity: 0.6; font-size: 11px; }
+    thead th.sortable.sort-asc .sort-icon::after  { content: ' ▲'; }
+    thead th.sortable.sort-desc .sort-icon::after { content: ' ▼'; }
+
+    /* Search box */
+    .search-wrap {
+      margin-bottom: 12px;
+    }
+    .search-wrap input {
+      width: 100%;
+      max-width: 360px;
+      padding: 8px 14px;
+      border: 1px solid #ccc;
+      border-radius: 20px;
+      font-size: 13px;
+      font-family: inherit;
+      outline: none;
+    }
+    .search-wrap input:focus { border-color: #1a3c6e; }
+
+    /* Flicker fix — hide access-denied overlay until auth check completes */
+    .is-authorized #access-denied-overlay { display: none !important; }
+
     @media (max-width: 600px) {
       .container { padding: 16px; }
       header { padding: 12px 16px; }
@@ -412,21 +446,14 @@
 </head>
 <body>
 
-<!-- ── Login Overlay ─────────────────────────────────────────────────────── -->
-<div id="login-overlay" style="display:none;position:fixed;inset:0;background:#1a3c6e;z-index:9999;align-items:center;justify-content:center;">
-  <div style="background:#fff;border-radius:14px;padding:40px 48px;width:100%;max-width:380px;box-shadow:0 8px 40px rgba(0,0,0,.3);text-align:center;">
+<!-- ── Access Denied Overlay ──────────────────────────────────────────────── -->
+<!-- Shown when Google account is not authorized. Hidden by default while auth check runs. -->
+<div id="access-denied-overlay" style="display:none;position:fixed;inset:0;background:#1a3c6e;z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:14px;padding:40px 48px;width:100%;max-width:420px;box-shadow:0 8px 40px rgba(0,0,0,.3);text-align:center;">
     <img src="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w200" alt="PSHS ZRC Logo" style="height:56px;width:auto;margin-bottom:16px;">
-    <h2 style="color:#1a3c6e;font-size:18px;margin-bottom:4px;">IT Dashboard Login</h2>
-    <p style="font-size:12px;color:#666;margin-bottom:24px;">PSHS ZRC IT Unit — Authorized Staff Only</p>
-    <input id="login-email" type="email" placeholder="IT Staff Email"
-      style="width:100%;padding:10px 14px;border:1px solid #ccc;border-radius:8px;font-size:14px;margin-bottom:10px;font-family:inherit;">
-    <input id="login-password" type="password" placeholder="Password"
-      style="width:100%;padding:10px 14px;border:1px solid #ccc;border-radius:8px;font-size:14px;margin-bottom:6px;font-family:inherit;">
-    <div id="login-error" style="color:#c0392b;font-size:13px;min-height:20px;margin-bottom:10px;"></div>
-    <button onclick="submitLogin()"
-      style="width:100%;background:#1a3c6e;color:#fff;border:none;border-radius:8px;padding:12px;font-size:15px;font-family:inherit;cursor:pointer;">
-      Log In
-    </button>
+    <h2 style="color:#1a3c6e;font-size:18px;margin-bottom:8px;" id="access-title">IT Dashboard</h2>
+    <p style="font-size:13px;color:#555;margin-bottom:8px;" id="access-message">Checking authorization…</p>
+    <p style="font-size:12px;color:#888;" id="access-email"></p>
   </div>
 </div>
 
@@ -466,6 +493,15 @@
       <div class="count" id="count-completed" style="color:#0a3622;">—</div>
       <div class="label">Completed</div>
     </div>
+    <div class="stat-card">
+      <div class="count" id="count-rejected" style="color:#842029;">—</div>
+      <div class="label">Rejected</div>
+    </div>
+  </div>
+
+  <!-- Search box -->
+  <div class="search-wrap" id="search-wrap">
+    <input type="text" id="search-input" placeholder="🔍  Search by JRF #, name, problem, assigned staff…" oninput="applySearch()">
   </div>
 
   <div class="filters">
@@ -475,6 +511,7 @@
     <button class="filter-btn" onclick="setFilter('Pending Director Approval', this)">Pending Director</button>
     <button class="filter-btn" onclick="setFilter('In Progress', this)">In Progress</button>
     <button class="filter-btn" onclick="setFilter('Completed', this)">Completed</button>
+    <button class="filter-btn" onclick="setFilter('Rejected', this)">Rejected</button>
     <button class="filter-btn btn-reports" onclick="showReports(this)">&#9783; Reports</button>
   </div>
 
@@ -485,14 +522,14 @@
       <table id="ticket-table" style="display:none;">
         <thead>
           <tr>
-            <th>JRF #</th>
-            <th>Date</th>
+            <th class="sortable" onclick="sortTable('jrfNo', this)">JRF #<span class="sort-icon"></span></th>
+            <th class="sortable" onclick="sortTable('date', this)">Date<span class="sort-icon"></span></th>
             <th>Name</th>
             <th>Position</th>
             <th>Problem</th>
             <th>Recommendation</th>
             <th>Assigned Staff</th>
-            <th>Status</th>
+            <th class="sortable" onclick="sortTable('status', this)">Status<span class="sort-icon"></span></th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -734,72 +771,42 @@
     }
   }
 
-  // ── Auth ─────────────────────────────────────────────────────────────────────
+  // ── Auth — Google Sign-In ────────────────────────────────────────────────
+  // Authentication is handled entirely by Session.getActiveUser() on the server.
+  // No password is required. The server function getDashboardUser() checks if the
+  // signed-in Google account is in the IT_STAFF_EMAIL script property.
+  // dashToken is kept as an empty string for backward-compatibility with server calls.
+  let dashToken = '';
 
-  // Dashboard session token — persisted in localStorage so it survives page refresh.
-  // Apps Script serves the page in an iframe whose URL changes on each load, so
-  // sessionStorage (scoped to the iframe URL) would be empty after every refresh.
-  // localStorage is scoped to the iframe origin and persists across loads.
-  // The server-side CacheService TTL (6 hours) expires the token automatically.
-  let dashToken = localStorage.getItem('dashToken') || '';
+  function showAccessDenied(message, email) {
+    const overlay = document.getElementById('access-denied-overlay');
+    document.getElementById('access-title').textContent = 'Access Denied';
+    document.getElementById('access-message').textContent = message;
+    document.getElementById('access-email').textContent = email ? 'Signed in as: ' + email : '';
+    overlay.style.display = 'flex';
+    sessionStorage.removeItem('dashAuthorized');
+  }
 
-  function showLogin() {
-    const overlay = document.getElementById('login-overlay');
+  function hideAccessDenied() {
+    document.getElementById('access-denied-overlay').style.display = 'none';
+  }
+
+  function logout() {
+    sessionStorage.removeItem('dashAuthorized');
+    document.getElementById('logged-in-email').textContent = '';
+    // Show access-denied overlay with a "sign out" message
+    const overlay = document.getElementById('access-denied-overlay');
+    document.getElementById('access-title').textContent = 'Logged Out';
+    document.getElementById('access-message').textContent = 'You have been logged out. Close this tab or sign in with a different account.';
+    document.getElementById('access-email').textContent = '';
     overlay.style.display = 'flex';
   }
 
-  function hideLogin() {
-    document.getElementById('login-overlay').style.display = 'none';
-  }
-
-  function submitLogin() {
-    const email    = document.getElementById('login-email').value.trim();
-    const password = document.getElementById('login-password').value;
-    const errEl    = document.getElementById('login-error');
-    errEl.textContent = '';
-
-    if (!email || !password) {
-      errEl.textContent = 'Please enter your email and password.';
-      return;
-    }
-
-    google.script.run
-      .withSuccessHandler(function(result) {
-        if (result && result.ok) {
-          dashToken = result.token;
-          localStorage.setItem('dashToken', dashToken);
-          document.getElementById('logged-in-email').textContent = result.email;
-          hideLogin();
-          loadTickets();
-        } else {
-          errEl.textContent = result && result.error ? result.error : 'Login failed.';
-        }
-      })
-      .withFailureHandler(function(err) {
-        errEl.textContent = 'Login error: ' + err.message;
-      })
-      .dashboardLogin(email, password);
-  }
-
-  // Allow Enter key in login fields
-  document.getElementById('login-password').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') submitLogin();
-  });
-
-  function logout() {
-    google.script.run.dashboardLogout(dashToken);
-    dashToken = '';
-    localStorage.removeItem('dashToken');
-    document.getElementById('logged-in-email').textContent = '';
-    showLogin();
-  }
-
-  // Called by withFailureHandler when a server function throws 'Session expired'
+  // Called by withFailureHandler when a server function throws
   function onServerError(err) {
-    if (err && err.message && err.message.includes('Session expired')) {
-      dashToken = '';
-      localStorage.removeItem('dashToken');
-      showLogin();
+    if (err && err.message && (err.message.includes('Unauthorized') || err.message.includes('Session expired'))) {
+      sessionStorage.removeItem('dashAuthorized');
+      showAccessDenied('Your session has expired or you are not authorized. Please reload the page.', '');
     } else {
       showToast('Error: ' + (err ? err.message : 'Unknown error'));
     }
@@ -808,8 +815,6 @@
   // ── Load & render ───────────────────────────────────────────────────────────
 
   function loadTickets() {
-    if (!dashToken) { showLogin(); return; }
-
     // Only show loading indicator if the ticket table section is visible
     const reportsVisible = document.getElementById('reports-panel').style.display !== 'none';
     if (!reportsVisible) {
@@ -839,27 +844,76 @@
   }
 
   // Auto-refresh every 60 seconds to pick up approval status changes
-  setInterval(function() { if (dashToken) loadTickets(); }, 60000);
+  setInterval(function() {
+    if (sessionStorage.getItem('dashAuthorized') === '1') loadTickets();
+  }, 60000);
 
   function updateStats(tickets) {
     const active    = tickets.filter(t => t.status !== 'Completed' && t.status !== 'Rejected').length;
     const completed = tickets.filter(t => t.status === 'Completed').length;
+    const rejected  = tickets.filter(t => t.status === 'Rejected').length;
     document.getElementById('count-all').textContent       = tickets.length;
     document.getElementById('count-active').textContent    = active;
     document.getElementById('count-completed').textContent = completed;
+    document.getElementById('count-rejected').textContent  = rejected;
   }
 
+  let sortColumn = 'jrfNo';
+  let sortDir    = 'desc'; // 'asc' or 'desc'
+  let searchQuery = '';
+
   function getFiltered() {
-    if (activeFilter === 'all') return allTickets;
-    return allTickets.filter(t => t.status === activeFilter);
+    let tickets = activeFilter === 'all' ? allTickets : allTickets.filter(t => t.status === activeFilter);
+    // Apply search
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      tickets = tickets.filter(function(t) {
+        return String(t.jrfNo        || '').toLowerCase().includes(q) ||
+               String(t.name         || '').toLowerCase().includes(q) ||
+               String(t.problem      || '').toLowerCase().includes(q) ||
+               String(t.assignedStaff|| '').toLowerCase().includes(q);
+      });
+    }
+    // Apply sort
+    tickets = tickets.slice().sort(function(a, b) {
+      let va = String(a[sortColumn] || '');
+      let vb = String(b[sortColumn] || '');
+      // Numeric sort for jrfNo
+      if (sortColumn === 'jrfNo') { va = Number(va); vb = Number(vb); }
+      if (va < vb) return sortDir === 'asc' ? -1 : 1;
+      if (va > vb) return sortDir === 'asc' ?  1 : -1;
+      return 0;
+    });
+    return tickets;
+  }
+
+  function applySearch() {
+    searchQuery = document.getElementById('search-input').value.trim();
+    renderTable(getFiltered());
+  }
+
+  function sortTable(col, th) {
+    if (sortColumn === col) {
+      sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      sortColumn = col;
+      sortDir    = 'desc';
+    }
+    // Update header classes
+    document.querySelectorAll('thead th.sortable').forEach(function(h) {
+      h.classList.remove('sort-asc', 'sort-desc');
+    });
+    th.classList.add('sort-' + sortDir);
+    renderTable(getFiltered());
   }
 
   function setFilter(filter, btn) {
     activeFilter = filter;
     document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    // Show ticket table, hide reports panel
+    // Show ticket table + search, hide reports panel
     document.getElementById('table-section').style.display  = 'block';
+    document.getElementById('search-wrap').style.display    = 'block';
     document.getElementById('reports-panel').style.display  = 'none';
     renderTable(getFiltered());
   }
@@ -877,7 +931,7 @@
       return;
     }
 
-    tickets.slice().reverse().forEach(function(t) {
+    tickets.forEach(function(t) {
       const row = document.createElement('tr');
       row.id = 'row-' + t.jrfNo;
 
@@ -1203,8 +1257,9 @@
   function showReports(btn) {
     document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    // Hide ticket table, show reports panel
+    // Hide ticket table + search, show reports panel
     document.getElementById('table-section').style.display  = 'none';
+    document.getElementById('search-wrap').style.display    = 'none';
     document.getElementById('reports-panel').style.display  = 'flex';
     // Default month/year dropdowns to current month and year on first open
     const monthSel = document.getElementById('rpt-month');
@@ -1473,28 +1528,36 @@
   }
 
   window.addEventListener('load', function() {
-    if (!dashToken) {
-      showLogin();
-      return;
-    }
-    // Validate the stored token before showing the dashboard
+    // Check Google account authorization via Session.getActiveUser()
     google.script.run
-      .withSuccessHandler(function(email) {
-        if (email) {
-          document.getElementById('logged-in-email').textContent = email;
+      .withSuccessHandler(function(result) {
+        if (result && result.authorized) {
+          // Authorized — show dashboard
+          sessionStorage.setItem('dashAuthorized', '1');
+          document.documentElement.classList.add('is-authorized');
+          hideAccessDenied();
+          document.getElementById('logged-in-email').textContent = result.email;
           loadTickets();
         } else {
-          dashToken = '';
-          localStorage.removeItem('dashToken');
-          showLogin();
+          // Not authorized
+          sessionStorage.removeItem('dashAuthorized');
+          const email = result && result.email ? result.email : '';
+          showAccessDenied(
+            email
+              ? 'Your Google account (' + email + ') is not authorized to access this dashboard. Contact the IT unit.'
+              : 'You must sign in with an authorized PSHS ZRC IT staff Google account.',
+            email
+          );
         }
       })
-      .withFailureHandler(function() {
-        dashToken = '';
-        localStorage.removeItem('dashToken');
-        showLogin();
+      .withFailureHandler(function(err) {
+        sessionStorage.removeItem('dashAuthorized');
+        showAccessDenied(
+          'Unable to verify your Google account. Make sure you are signed in and try reloading.',
+          ''
+        );
       })
-      .validateDashboardSession(dashToken);
+      .getDashboardUser();
   });
 </script>
 </body>

@@ -57,14 +57,20 @@
 ```
 [Faculty / Staff browser]
         |
-        | google.script.run.processChat({ message, session })
+        | google.script.run.getUserIdentity()  ← on page load
+        | google.script.run.getTicketUpdates() ← after identity resolved
+        | google.script.run.processChat({ message, sessionId, userIdentity })
         v
 [Index.html] --> [processChat() / doPost(e) in Code.gs]
                         |
+                        |-- getUserIdentity()    reads Google account email, looks up Employees sheet
+                        |-- getTicketUpdates()   returns recent status changes for this user
+                        |-- getMyTickets()       returns all tickets for this user
                         |-- handleChat()         RAG + Gemini, detects %%FILE_TICKET%% signal
-                        |-- handleFormStep()     collects fields step-by-step
+                        |-- handleFormStep()     collects description step only (identity pre-filled)
+                        |-- handleCctvLetterCheck()  CCTV letter gate
                         |-- handleConfirm()      yes/no before saving
-                        |-- saveTicket()         appends row; sends supervisor approval email
+                        |-- saveTicket()         appends row (cols A–R); sends supervisor approval email
                         v
               [Google Sheet: Tickets tab]
 
@@ -129,6 +135,8 @@ One row per submitted ticket. Row 1 is the header row.
 | N | Target Date | Target completion date set during assessment |
 | O | Others Description | Free-text description when recommendation is "Others, Repair" → written to Template cell P25 |
 | P | Service Location | `In-Campus Repair` or `External Service Provider Repair` — set in Assess modal → PDF row 21 checkboxes |
+| Q | Raw Description | Raw unparaphrased description from chat — for reference and audit |
+| R | Requester Email | Google account email of the requester — used by getTicketUpdates() and getMyTickets() |
 
 ### Tab name: `KnowledgeBase`
 RAG data source. Tab name must be exactly `KnowledgeBase`. Row 1 = header.
@@ -153,22 +161,20 @@ Maps department/office to supervisor for auto-fill during chatbot form flow.
 `lookupDepartment()` matches on col A (abbreviated) **or** col D (full name) — whichever the input matches.
 
 ### Tab name: `Employees`
-Optional. Enables auto-fill of position and department when a name is recognized.
+**REQUIRED.** Identity source for the chatbot. Looked up by Google account email (col D).
 
 | Column | Header | Notes |
 |--------|--------|-------|
-| A | Name | Full name — must match exactly what the user types (case-insensitive) |
+| A | Name | Full name — written to the ITJRF form |
 | B | Position | Full position title e.g. `Teacher III` — written to the ITJRF form |
-| C | Department/Office | Abbreviated code matching col A of `Departments` sheet e.g. `SSD` |
+| C | Department/Office | **Abbreviated department code** matching col A of `Departments` sheet e.g. `SSD`, `OCD`, `FAD` — **NOT a position abbreviation** |
+| D | Email | Staff member's school Google account email (primary identity key) |
 
-When a name match is found: position and department are pre-filled → those form steps are skipped. Then `lookupDepartment()` is called automatically to also skip the supervisor step. Best case: user types only their name and jumps straight to the problem description.
+> **Col D email must match the Google account the staff member signs in with.** Col C must be the abbreviated department code (e.g. SSD), NOT a position abbreviation.
 
-**Matching strategy in `lookupEmployee()`:**
-1. Exact match (case-insensitive) — silent auto-fill
-2. Fuzzy match — if user typed ≥2 words and no exact match, checks whether every typed word appears in any employee name. Used only when exactly 1 candidate matches (avoids false positives). On fuzzy match: auto-fills same fields + shows a note: *"I found you as [Full Name] in our records — I've pre-filled your details. If that's not you, please let me know."* rendered as a separate bubble
-3. No match / ambiguous (0 or 2+ candidates) — proceeds with manual questions
+> ⚠️ **A common data entry mistake is putting something like `"ISA I"` (a position abbreviation) in col C instead of the department code (e.g. `"CID"`).** This will cause supervisor auto-fill to fail silently.
 
-Examples: `"Maria Santos"` matches `"Maria C. Santos"` ✓ · `"Bryan Padao"` matches `"Philip Bryan G. Padao"` ✓ · `"Maria"` (1 word) → no fuzzy attempt, falls through to manual.
+Identity is resolved by `getUserIdentity()` on page load — reads `Session.getActiveUser().getEmail()` and matches to col D. Name, position, department, and supervisor are all pre-filled automatically before the form is even started.
 
 ### Tab name: `Approvals`
 Stores one-time approval tokens. Auto-created on first email send.
@@ -256,8 +262,8 @@ Others, Repair
 | `GEMINI_API_KEY` | key from aistudio.google.com | Gemini API authentication |
 | `WEBAPP_URL` | deployed `/exec` URL | Base URL for approval email links |
 | `DIRECTOR_EMAIL` | director's email address | Recipient for director approval emails |
-| `IT_STAFF_EMAIL` | IT staff email(s), comma-separated | Approval notifications + Dashboard login allow-list |
-| `DASHBOARD_PASSWORD` | shared password string | Dashboard login authentication |
+| `IT_STAFF_EMAIL` | IT staff email(s), comma-separated | Approval notifications + Dashboard authorization allow-list |
+| `ALLOWED_DOMAIN` | e.g. `zrc.pshs.edu.ph` | Optional. If set, only emails from this domain can use the chatbot. |
 
 ---
 
@@ -274,7 +280,7 @@ const GEMINI_ENDPOINT          = `https://generativelanguage.googleapis.com/v1/m
 
 // Security & rate limiting
 const APPROVAL_TOKEN_TTL_DAYS  = 7;     // approval email links expire after 7 days
-const DASHBOARD_SESSION_TTL    = 28800; // dashboard session: 8 hours (seconds)
+const DASHBOARD_SESSION_TTL    = 21600; // dashboard session: 6 hours (seconds) — CacheService max is 21600
 const CHAT_SESSION_TTL         = 1800;  // chat session cache: 30 minutes (seconds)
 const MAX_CHAT_MESSAGES        = 30;    // max user messages per chat session
 const MAX_SUBMISSIONS_PER_HOUR = 20;    // global ticket submission rate limit per hour
@@ -283,12 +289,12 @@ const MAX_MESSAGE_LENGTH       = 1000;  // max characters accepted per user mess
 
 ### Entry points
 - **`doGet(e)`** — serves `Index.html` by default; `Dashboard.html` when `?page=dashboard`; routes to `handleApproval()` when `?token=X&action=Y`
-- **`doPost(e)`** — routes to `handleChat`, `handleFormStep`, or `handleConfirm` based on `session.state`
-- **`processChat(params)`** — called from `Index.html` via `google.script.run`; accepts `{ message, sessionId }`; sanitizes input; loads/saves session via CacheService; enforces per-session message limit
+- **`doPost(e)`** — routes to `handleChat`, `handleFormStep`, `handleConfirmName`, `handleConfirm`, or `handleCctvLetterCheck` based on `session.state`
+- **`processChat(params)`** — called from `Index.html` via `google.script.run`; accepts `{ message, sessionId, userIdentity? }`; sanitizes input; loads/saves session via CacheService; enforces per-session message limit; pre-fills identity fields from `userIdentity` on first call if provided
 
 ### Quick-start buttons (Index.html landing)
 
-Before the chat input is enabled, the user sees 5 option buttons. Input is disabled until a choice is made.
+Before the chat input is enabled, the user sees **5** option buttons. Input is disabled until a choice is made.
 
 | Button | Key | Behavior |
 |--------|-----|----------|
@@ -296,9 +302,12 @@ Before the chat input is enabled, the user sees 5 option buttons. Input is disab
 | 🎨 Publication / Design | `publication` | Asks for request details first → user describes or says "already sent" → intro + name → auto-fill → confirmation. `recType = 'Others, Repair'` |
 | 📷 CCTV Viewing Request | `cctv` | Shows Data Privacy Act letter requirement + asks for brief description → intro + name → auto-fill → confirmation. `recType = 'Others, Repair'` |
 | 🔧 Technical Assistance | `technical` | Asks for assistance details first → user describes → intro + name → auto-fill → confirmation. `recType = 'Others, Repair'` |
-| ❓ Ask a Question | `question` | Enables input; normal Gemini chat flow |
 
-`handleQuickStart(type, session)` — sets `session.quickStartSteps = true`, uses `QUICK_START_FORM_STEPS` (description → name → position → department → supervisor). Returns the description prompt immediately (customised per type); the form intro message is injected after the description answer is collected, just before the name step. CCTV also prepends the Data Privacy Act note before the description prompt.
+> "❓ Ask a Question" button was removed. IT Issue / Repair already covers free-form chat.
+
+`handleQuickStart(type, session)` — sets `session.quickStartSteps = true`, `session.quickStartType = type` (so cancel can restart the same flow), and `session.quickStartLabel` (e.g. `'Technical Assistance'` — prefixed to the description on save). Uses `QUICK_START_FORM_STEPS` (description → name → position → department → supervisor). Returns the description prompt immediately (customised per type); the form intro message is injected after the description answer is collected, just before the name step. CCTV also prepends the Data Privacy Act note before the description prompt.
+
+**Cancel restarts the same quick-start flow:** When the user says "no" at the confirmation step and the ticket came from a quick-start button, `handleConfirm()` calls `handleQuickStart(session.quickStartType, {})` and restarts from the description question — it does NOT reset to neutral.
 
 ### Chat flow (server-side session state machine)
 
@@ -307,18 +316,25 @@ Client sends only `sessionId` (opaque UUID). Session object lives in `CacheServi
 | `session.state` | Handler | Description |
 |-----------------|---------|-------------|
 | _(none)_ | `handleChat()` | RAG + Gemini; detects `%%FILE_TICKET:<desc>%%` signal |
-| `'collecting'` | `handleFormStep()` | Walks through FORM_STEPS |
+| `'collecting'` | `handleFormStep()` | Walks through FORM_STEPS; gibberish detection on structured fields |
+| `'confirm_name'` | `handleConfirmName()` | Asks user to confirm employee lookup result before auto-filling |
 | `'confirm'` | `handleConfirm()` | Waits for yes/no; on yes → `saveTicket()` + locks chat UI |
 
 ### Form steps (FORM_STEPS array) — service location and rec type set by IT staff on Dashboard
 
 Each step includes a contextual hint explaining what the field is for and why it's needed.
 
-1. `name` — "What is your full name? (This will appear on the IT Job Request Form as the requester.)" → triggers `lookupEmployee()`; if found, auto-fills position, positionAbbrev, department, and supervisor
-2. `position` — "What is your position or designation? (e.g. Teacher I, Administrative Assistant II)" *(skippable if auto-filled from Employees sheet)*
-3. `department` — "What department or office are you under? (I'll use this to automatically look up your supervisor for the approval email.)" *(skippable if auto-filled from Employees sheet)*
-4. `supervisor` — "Who is your immediate supervisor? (They will receive an approval email before IT takes action.)" *(skippable if auto-filled from Departments sheet)*
-5. `description` — "Please describe the problem in detail." *(skippable — pre-filled from chat signal)*
+1. `name` — "What is your full name?" → triggers `lookupEmployee()`; if a match is found, switches to `confirm_name` state (user must confirm before auto-fill is applied)
+1. `description` — "Please describe the problem in detail." *(skippable — pre-filled from chat signal)*
+
+Identity fields (name/position/department/supervisor) are pre-filled from `getUserIdentity()` on page load — FORM_STEPS now contains only the description step.
+
+### CCTV letter gate (`cctv_letter_check` state)
+
+Triggered when user selects the CCTV quick-start button. Handler: `handleCctvLetterCheck()`.
+- **Yes** (has Director-approved letter) → switches state to `collecting`, asks for description
+- **No** → explains letter requirement, ends conversation (`submitted: true`), no ticket filed
+- **Unrecognised** → re-asks once (`session.cctvFollowUpAsked = true`), then treats as No
 
 ### Pre-fill logic in handleChat()
 When `%%FILE_TICKET%%` is detected, `session.formData.description` is pre-filled from the signal.
@@ -329,19 +345,60 @@ Additionally, if the description contains any of the following keywords, `sessio
 - CCTV/media: `cctv`, `footage`, `camera`
 - Publication/design: `poster`, `tarpaulin`, `tarps`, `pubmat`, `design`, `layout`, `social media`, `facebook`, `post`, `certificate`, `announcement`, `publication`
 
+**Quick-start description prefix:** In quick-start flows, `session.quickStartLabel` is prepended to whatever the user types for description (e.g. `"Technical Assistance: my laptop won't connect to the projector"`). This ensures the ticket clearly identifies the request type.
+
+### Gibberish detection in handleFormStep()
+
+Applied to structured fields only: `name`, `position`, `department`, `supervisor`. Description is skipped (free-form text).
+
+`isGibberish(text)` returns true if any of these conditions hold:
+1. The whole string (with up to 3 trailing chars) is one repeating 2–4 char n-gram (e.g. `asdasdasd`, `vcvcvcvc`)
+2. Fewer than 40% unique characters for strings ≥ 8 chars (e.g. `asdasdasdvcvcv`)
+3. Vowel ratio < 10% for strings > 6 chars (e.g. `qwrtpsdfg`)
+4. Consecutive consonant run of 6+ letters (e.g. `sdfjklqw`)
+Strings shorter than 4 chars are never flagged (safe for dept codes like `SSD`, `OCD`).
+
+**Counter behavior** (`session.gibberishCount`):
+- **1st** gibberish → warning + re-ask same prompt
+- **2nd** gibberish → stronger warning ("one more and I'll have to give up on us 😅") + re-ask
+- **3rd** gibberish → random funny joke + `{ submitted: true }` (locks chat, shows "Start a New Conversation")
+- Counter resets to 0 on any valid (non-gibberish) input
+
+### Supervisor auto-fill — `resolveAutoSupervisor(position, department, employeeName)`
+
+Called after name confirmation (yes path) and after manual department entry. Always returns a supervisor:
+1. Looks up `department` in the Departments sheet via `lookupDepartment()`
+2. **Self-reference check:** if the Departments sheet lists the employee as their OWN department's supervisor (i.e. they ARE the division head), fall through to step 3. This covers Milo S. Saldon, Mary Sheryl M. Saldon-Raznee, and Keisel Van Valerie V. Gamil — their supervisor is always the Campus Director.
+3. **Fallback:** returns `{ supervisorName: 'Edman H. Gallamaso', supervisorEmail: <DIRECTOR_EMAIL>, fullName: 'Campus Director' }` when no Departments entry exists or self-reference is detected.
+
+> **Division heads rule:** Any employee whose name matches the supervisor listed in the Departments sheet for their own department is treated as a division head → supervisor = Campus Director. This is data-driven (not hardcoded names) so it works for any future chiefs as long as the Departments sheet is set up consistently.
+
 ### Security functions
 - **`sanitizeInput(text)`** — trims, enforces MAX_MESSAGE_LENGTH, strips `%%SIGNAL%%` and injection delimiters
 - **`checkGlobalRateLimit()`** — CacheService sliding window; throws if > MAX_SUBMISSIONS_PER_HOUR in 60 min
-- **`dashboardLogin(email, password)`** — validates against `IT_STAFF_EMAIL` + `DASHBOARD_PASSWORD`; returns UUID token stored in CacheService for DASHBOARD_SESSION_TTL seconds
-- **`validateDashboardSession(token)`** — returns email if valid, null if expired/invalid
-- **`dashboardLogout(token)`** — removes session from CacheService
-- **`_requireDashboardAuth(token)`** — internal guard; throws `'Session expired. Please log in again.'` if invalid
+- **`dashboardLogin(email, password)`** — kept for backward compatibility; no longer used by Dashboard UI
+- **`validateDashboardSession(token)`** — kept for backward compatibility; no longer used by Dashboard UI
+- **`dashboardLogout(token)`** — kept for backward compatibility; no longer used by Dashboard UI
+- **`_requireDashboardAuth(token)`** — internal guard; validates via `Session.getActiveUser()` against `IT_STAFF_EMAIL`; falls back to token check if `getActiveUser()` throws
 
 ### Backend functions
+- **`getUserIdentity()`** — reads Google account email via `Session.getActiveUser()`; looks up Employees sheet col D; returns `{ email, name, position, department, departmentFull, supervisor, supervisorEmail }` or `{ error }` object
+- **`getDashboardUser()`** — returns `{ email, authorized }` for dashboard auth check; used by Dashboard on load
+- **`getTicketUpdates(email)`** — returns up to 5 recent ticket status updates for requester email (col R), excluding Pending Supervisor Approval status
+- **`getMyTickets(email)`** — returns all tickets for a requester email (col R), all statuses, sorted by JRF # descending
+- **`hasEnoughContext(message)`** — lightweight Gemini call; returns bool — true if message has enough detail to file a ticket; fails open (returns true) on API error
+- **`buildDescriptionFromHistory(session)`** — Gemini call to extract a comprehensive description from the full chat history; falls back to `session.formData.description` on error
+- **`paraphraseDescription(rawText)`** — Gemini call to formally paraphrase description in Philippine government document style; returns rawText unchanged on error
+- **`handleCctvLetterCheck(message, session)`** — handles `cctv_letter_check` state; yes = proceed to description; no = explain requirement + end conversation
 - **`searchKnowledgeBase(query)`** — keyword scoring against KnowledgeBase sheet, returns top 3 or null
 - **`callGemini(message, history, kbContext)`** — Gemini API call with system prompt + KB context + history
-- **`saveTicket(data)`** — calls `checkGlobalRateLimit()` first; appends 16-column row (A–P); sends supervisor approval email
+- **`saveTicket(data)`** — calls `checkGlobalRateLimit()` + per-user rate limit (3/day); appends 18-column row (A–R); sends supervisor approval email
 - **`appendHistory(history, userText, modelText)`** — rolling 20-message history (max 10 turns)
+- **`isGibberish(text)`** — detects keyboard mashing; used by `handleFormStep()` (description step skipped)
+- **`resolveAutoSupervisor(position, department, employeeName)`** — resolves supervisor from Departments sheet; falls back to Campus Director; detects division heads via self-reference check
+- **`sendOverdueReminders()`** — emails IT staff about overdue In Progress tickets; set as daily time-driven trigger (8:00–9:00 AM)
+- **`cleanupApprovalTokens()`** — deletes Approvals rows older than 30 days; set as weekly trigger (Monday 2:00–3:00 AM)
+- **`archiveOldTickets()`** — moves Completed/Rejected tickets older than 90 days to Archive sheet; set as monthly trigger (1st of month 3:00–4:00 AM)
 
 ### Approval functions
 - **`sendApprovalEmail(type, jrfNo, ticket)`** — generates UUID token, stores in Approvals sheet (cols A–E, col E = Created ISO timestamp), emails supervisor or director with one-time approve/reject links
@@ -349,10 +406,10 @@ Additionally, if the description contains any of the following keywords, `sessio
 - **`approvalHtmlPage(title, message)`** — returns styled HTML response for approval link clicks
 - **`getStaffEmail(name)`** — looks up email from optional `Staff` sheet by name
 - **`lookupDepartment(dept)`** — looks up supervisor name + email + full office name from `Departments` sheet; matches on abbreviated code (col A) or full name (col D)
-- **`lookupEmployee(name)`** — looks up position and department from `Employees` sheet by name (exact then fuzzy); returns null if sheet missing or name not found
+- **`lookupEmployee(name)`** — kept for backward compatibility; no longer called in main flow (identity now resolved by `getUserIdentity()`)
 
-### Dashboard functions (all require `token` as first param → call `_requireDashboardAuth(token)`)
-- **`getTickets(token)`** — returns array of ticket objects (all 16 fields including `dateCompleted`)
+### Dashboard functions (all call `_requireDashboardAuth(token)` internally)
+- **`getTickets(token)`** — returns array of ticket objects (all 18 fields including `dateCompleted`)
 - **`submitAssessment(token, jrfNo, assignedStaff, recommendation, assessment, targetDate, othersDescription, serviceLocation)`** — saves cols G/H/I/K/N/O/P; sends director approval email
 - **`updateTicketStatus(token, jrfNo, actionTaken, taskResult)`** — validates; writes cols H/J/L/M; requires status = `In Progress`
 - **`updateTicketDetails(token, jrfNo, name, position, supervisor, problem)`** — corrects cols C/D/E/F
@@ -447,10 +504,12 @@ Messaging-app style (iMessage/WhatsApp inspired). Primary color: `#1a3c6e` (PSHS
 Served at `?page=dashboard`. Uses `google.script.run` (no HTTP fetch).
 
 ### Features
-- **Login overlay**: full-screen login on first load; validates email against `IT_STAFF_EMAIL` + `DASHBOARD_PASSWORD`; `dashToken` stored in `sessionStorage` (8-hour TTL via CacheService); auto-redirects to login on session expiry
-- **Logout button**: in header; calls `dashboardLogout(token)` server-side
-- **Stats bar**: Total / Active / Completed counts
-- **Filter buttons**: All / Pending Approval / Pending Assessment / Pending Director / In Progress / Completed
+- **Login**: calls `getDashboardUser()` on load; if authorized (email in `IT_STAFF_EMAIL`) — show dashboard; if not — show access denied page. No password. Uses `Session.getActiveUser().getEmail()`. Login flicker prevented by synchronous `<head>` script that adds `is-authorized` class to `<html>` if `sessionStorage.dashAuthorized === '1'`.
+- **Logout button**: in header; clears `sessionStorage.dashAuthorized` and shows access denied overlay
+- **Stats bar**: Total / Active / Completed / Rejected counts
+- **Search box**: filters by jrfNo, name, problem, assignedStaff client-side on every keystroke
+- **Filter buttons**: All / Pending Approval / Pending Assessment / Pending Director / In Progress / Completed / **Rejected**
+- **Sortable columns**: JRF #, Date, Status — click header to sort ascending/descending (▲ ▼ indicator)
 - **Reports panel** (Reports button — always filled dark blue):
   - Monthly Summary table (year/month dropdowns, CSV export, avg. resolution days)
   - Overdue Tickets table (open > 7 days; red highlight at 14+ days)
@@ -488,30 +547,42 @@ Served at `?page=dashboard`. Uses `google.script.run` (no HTTP fetch).
 ## 12. Setup instructions
 
 ### Google Sheet tabs to create manually
-1. `Tickets` — auto-created with headers on first ticket (columns A–P)
+1. `Tickets` — auto-created with headers on first ticket (columns A–R). If existing sheet has no col Q/R, `saveTicket()` adds them automatically.
 2. `KnowledgeBase` — add issues/solutions (see `docs/knowledge-base-sample.csv`; copy rows directly into the sheet)
 3. `Departments` — columns: Department/Office | Supervisor Name | Supervisor Email | Full Name
-4. `Employees` — *(optional)* columns: Name | Position | Department/Office
+4. `Employees` — **REQUIRED** — columns: Name | Position | Department/Office | Email (col D = school Google account email)
 5. `Template` — paste the official ITJRF layout (see `docs/ITJRF.xlsx`)
 6. `Approvals` — auto-created on first approval email
 
-> **Existing Tickets sheets:** If the sheet already exists without col P header, manually add `Service Location` to cell P1.
+> **Existing Tickets sheets:** If the sheet already exists without col P header, manually add `Service Location` to cell P1, `Raw Description` to Q1, `Requester Email` to R1.
 
 ### Script Properties to set
 ```
-GEMINI_API_KEY      → from aistudio.google.com
-WEBAPP_URL          → your deployed /exec URL
-DIRECTOR_EMAIL      → e.g. director@zrc.pshs.edu.ph
-IT_STAFF_EMAIL      → e.g. pgpadao@zrc.pshs.edu.ph,dasulit@zrc.pshs.edu.ph
-DASHBOARD_PASSWORD  → shared password for IT staff dashboard login
+GEMINI_API_KEY   → from aistudio.google.com
+WEBAPP_URL       → your deployed /exec URL
+DIRECTOR_EMAIL   → e.g. director@zrc.pshs.edu.ph
+IT_STAFF_EMAIL   → e.g. pgpadao@zrc.pshs.edu.ph,dasulit@zrc.pshs.edu.ph
+ALLOWED_DOMAIN   → (optional) e.g. zrc.pshs.edu.ph — restricts chatbot to this domain
 ```
 
 ### Deployment
 1. Apps Script → **Deploy → New deployment**
-2. Type: **Web app** / Execute as: **Me** / Who has access: **Anyone**
+2. Type: **Web app**
+   Execute as: **User accessing the web app**  ← required for Session.getActiveUser() to work
+   Who has access: **Anyone with a Google account**  ← required for faculty/staff sign-in
 3. Copy the Web App URL → paste into `WEBAPP_URL` Script Property
 
+> Both Index.html (chatbot) and Dashboard.html require this setting for `Session.getActiveUser().getEmail()` to work.
+
 > **After any code change:** Deploy → Manage deployments → pencil → New version → Deploy.
+
+### Time-driven triggers (set up in Apps Script → Triggers)
+
+| Function | Frequency | Time |
+|----------|-----------|------|
+| `sendOverdueReminders` | Day timer | 8:00–9:00 AM |
+| `cleanupApprovalTokens` | Week timer (Monday) | 2:00–3:00 AM |
+| `archiveOldTickets` | Month timer (1st) | 3:00–4:00 AM |
 
 ---
 
@@ -545,6 +616,15 @@ DASHBOARD_PASSWORD  → shared password for IT staff dashboard login
 | User bubble text breaking mid-word | Removed row wrapper from user bubbles; `max-width: 84%` now calculates against full chat width, not shrink-to-fit row |
 | Browser auto-coloring bot text blue | `<meta name="format-detection">` + `color: #1a1a1a !important` on `.message.bot *` |
 | Textarea showing scrollbar on short input | `overflow-y: hidden` default; JS enables `auto` only when `scrollHeight > 120px` |
+| Auto-fill applied without asking user | Previous behavior silently replaced name/position/dept. Fixed: `lookupEmployee()` now triggers `confirm_name` state — user must reply "yes" before auto-fill is applied |
+| Name shown as typed text instead of canonical name | On "yes" in `confirm_name`, `session.formData.name` is set to `emp.matchedName` (the exact sheet value), not whatever the user typed |
+| Supervisor not skipped after name confirmation | `resolveAutoSupervisor()` was returning null when dept code in Employees sheet didn't match Departments sheet. Fixed: function now always falls back to Campus Director instead of returning null |
+| Division heads (Keisel, Milo, Mary Sheryl) showing themselves as supervisor | Departments sheet maps their dept to themselves as supervisor. Fixed in `resolveAutoSupervisor()`: if `deptLookup.supervisorName` matches the employee's own name, treat as division head → use Campus Director |
+| Employees sheet col C set to position abbreviation (e.g. "ISA I") | Data entry error — col C must be the abbreviated **department code** (e.g. `CID`), not a position abbreviation. Causes supervisor lookup to fail silently |
+| Cancel at confirmation resets to neutral instead of restarting quick-start | Fixed: `session.quickStartType` is persisted; `handleConfirm()` restarts `handleQuickStart(qsType, {})` on "no" for quick-start flows |
+| Description missing quick-start context label | Fixed: `session.quickStartLabel` is prepended to description (e.g. `"Technical Assistance: ..."`) so IT staff see the request type clearly |
+| Users entering keyboard gibberish in form fields | `isGibberish()` detects repeated patterns, low unique-char ratio, low vowel ratio, or long consonant runs. `handleFormStep()` warns twice, ends with a joke + locks chat on 3rd offence |
+| "Ask a Question" button removed | Redundant — IT Issue / Repair covers the same use case with the Gemini chat flow |
 
 ---
 

@@ -34,65 +34,25 @@ const RECOMMENDATION_TYPES = [
   'Others, Repair',
 ];
 
-// Form fields collected step-by-step when state === 'collecting'
+// Form fields collected step-by-step when state === 'collecting'.
+// Identity (name/position/department/supervisor) is pre-filled from Google account
+// via getUserIdentity() — only description is collected here.
 const FORM_STEPS = [
-  {
-    key: 'name',
-    prompt: 'What is your full name?\n(This will appear on the IT Job Request Form as the requester.)',
-  },
-  {
-    key: 'position',
-    prompt: 'What is your position or designation?\n(e.g. Teacher I, Administrative Assistant II)',
-    // Skipped if auto-filled from the Employees sheet lookup
-    skippable: true,
-  },
-  {
-    key: 'department',
-    prompt: 'What department or office are you under?\n(I\'ll use this to automatically look up your supervisor for the approval email.)',
-    // Skipped if auto-filled from the Employees sheet lookup
-    skippable: true,
-  },
-  {
-    key: 'supervisor',
-    prompt: 'Who is your immediate supervisor?\n(They will receive an approval email before IT takes action.)',
-    // Skipped if auto-filled from the Departments sheet lookup
-    skippable: true,
-  },
   {
     key: 'description',
     prompt: 'Please describe the problem in detail.',
-    // May be pre-filled from the chat — skipped if already set
+    // May be pre-filled from the chat signal — skipped if already set
     skippable: true,
   },
 ];
 
 // Step order for quick-start buttons (Publication/Design, CCTV, Technical Assistance).
-// Description is collected FIRST so the user provides request details before
-// the form asks for their name and auto-fills position/department/supervisor.
+// Identity is pre-filled from Google account; only description is collected here.
 const QUICK_START_FORM_STEPS = [
   {
     key: 'description',
     prompt: 'Please describe your request in detail.',
     // Prompt is customised per type in handleQuickStart(); this is a fallback only.
-  },
-  {
-    key: 'name',
-    prompt: 'What is your full name?\n(This will appear on the IT Job Request Form as the requester.)',
-  },
-  {
-    key: 'position',
-    prompt: 'What is your position or designation?\n(e.g. Teacher I, Administrative Assistant II)',
-    skippable: true,
-  },
-  {
-    key: 'department',
-    prompt: 'What department or office are you under?\n(I\'ll use this to automatically look up your supervisor for the approval email.)',
-    skippable: true,
-  },
-  {
-    key: 'supervisor',
-    prompt: 'Who is your immediate supervisor?\n(They will receive an approval email before IT takes action.)',
-    skippable: true,
   },
 ];
 
@@ -186,12 +146,26 @@ function dashboardLogout(token) {
 }
 
 /**
- * Internal auth guard. Throws 'Session expired. Please log in again.' if the token is invalid.
- * Call this at the start of every dashboard server function.
+ * Internal auth guard for dashboard functions.
+ * Validates that the currently signed-in Google account is an authorized IT staff member.
+ * Throws 'Unauthorized' if not in the IT_STAFF_EMAIL list.
+ * The token parameter is kept for backward compatibility but is no longer checked.
  */
 function _requireDashboardAuth(token) {
-  if (!validateDashboardSession(token)) {
-    throw new Error('Session expired. Please log in again.');
+  try {
+    const email = Session.getActiveUser().getEmail();
+    if (!email) throw new Error('Unauthorized: not signed in.');
+    const allowed = (PropertiesService.getScriptProperties().getProperty('IT_STAFF_EMAIL') || '')
+      .split(',').map(function(e) { return e.trim().toLowerCase(); }).filter(Boolean);
+    if (!allowed.includes(email.toLowerCase().trim())) {
+      throw new Error('Unauthorized: ' + email + ' is not an authorized IT staff member.');
+    }
+  } catch (err) {
+    if (err.message && err.message.startsWith('Unauthorized')) throw err;
+    // Session.getActiveUser() throws in some contexts — fall back to token check
+    if (!validateDashboardSession(token)) {
+      throw new Error('Session expired. Please log in again.');
+    }
   }
 }
 
@@ -239,6 +213,8 @@ function doPost(e) {
       result = handleConfirm(message, session);
     } else if (session.state === 'confirm_name') {
       result = handleConfirmName(message, session);
+    } else if (session.state === 'cctv_letter_check') {
+      result = handleCctvLetterCheck(message, session);
     } else {
       result = handleChat(message, session);
     }
@@ -269,6 +245,23 @@ function processChat(params) {
     currentId = Utilities.getUuid();
   }
 
+  // Pre-fill identity fields from Google account lookup on first message.
+  // Only applied once (when session is new and userIdentity is provided).
+  if (params.userIdentity && !session.identityVerified) {
+    const id = params.userIdentity;
+    if (!session.formData) session.formData = {};
+    session.formData.name             = id.name            || '';
+    session.formData.position         = id.position        || '';
+    session.formData.department       = id.department      || '';
+    session.formData.departmentFull   = id.departmentFull  || id.department || '';
+    session.formData.supervisor       = id.supervisor      || '';
+    session.formData.supervisorEmail  = id.supervisorEmail || '';
+    session.formData.userEmail        = id.email           || '';
+    session.formData.identityVerified = true;
+    session.userEmail                 = id.email           || '';
+    session.identityVerified          = true;
+  }
+
   // Handle quick-start buttons (Publication/Design, CCTV, Technical Assistance).
   // Skips Gemini entirely — initialises the form collection state directly.
   if (params.quickStart && !session.state) {
@@ -297,6 +290,8 @@ function processChat(params) {
     result = handleConfirm(message, session);
   } else if (session.state === 'confirm_name') {
     result = handleConfirmName(message, session);
+  } else if (session.state === 'cctv_letter_check') {
+    result = handleCctvLetterCheck(message, session);
   } else {
     result = handleChat(message, session);
   }
@@ -336,6 +331,26 @@ function handleChat(message, session) {
   // Keep a rolling conversation history for Gemini (max 10 turns)
   if (!session.history) session.history = [];
 
+  // Unified nonsense counter — increments on gibberish OR unrelated-to-IT input.
+  // 3 combined strikes from any mix of gibberish/unrelated messages ends the conversation.
+  const NONSENSE_JOKES = [
+    'Alright, I give up trying to decode keyboard poetry. 😄 Please start a new conversation when you\'re ready to type normally — I\'ll be here!',
+    'Three strikes and the keyboard wins! 🎹 My gibberish translator is currently on vacation. Start a new conversation when you\'re ready!',
+    'I think your cat may have walked across the keyboard one too many times. 🐱 Let\'s start fresh — begin a new conversation when you\'re ready!',
+  ];
+  if (isGibberish(message)) {
+    session.nonsenseCount = (session.nonsenseCount || 0) + 1;
+    if (session.nonsenseCount >= 3) {
+      const joke = NONSENSE_JOKES[Math.floor(Math.random() * NONSENSE_JOKES.length)];
+      return { reply: joke, session: {}, submitted: true };
+    }
+    const warnings = [
+      'That doesn\'t look like a valid message. Could you describe your IT issue in plain text?',
+      'Hmm, that still doesn\'t look right. One more like that and I\'ll have to give up on us! 😅',
+    ];
+    return { reply: warnings[session.nonsenseCount - 1], session };
+  }
+
   // 1. RAG: fetch KB context relevant to the message
   const kbContext = searchKnowledgeBase(message);
 
@@ -351,11 +366,6 @@ function handleChat(message, session) {
     const visibleReply = geminiReply.replace(/%%FILE_TICKET:[\s\S]*?%%/, '').trim();
     const prefillDesc  = ticketMatch[1].trim();
 
-    // Initialise form collection
-    session.state    = 'collecting';
-    session.step     = 0;
-    session.formData = { description: prefillDesc };
-
     // Pre-fill recommendation for known request types
     const lowerDesc = prefillDesc.toLowerCase();
     const isOthers =
@@ -364,9 +374,80 @@ function handleChat(message, session) {
       lowerDesc.includes('pubmat')       || lowerDesc.includes('design')      || lowerDesc.includes('layout')  ||
       lowerDesc.includes('social media') || lowerDesc.includes('facebook')    || lowerDesc.includes('post')    ||
       lowerDesc.includes('certificate')  || lowerDesc.includes('announcement')|| lowerDesc.includes('publication');
+
+    // When identity is already known (Google account pre-fill), auto-file the ticket
+    // immediately — but only if the conversation contains actual IT-related details.
+    if (session.identityVerified) {
+      // Build a comprehensive description from the full conversation, then paraphrase
+      const rawDesc    = buildDescriptionFromHistory(session) || prefillDesc;
+
+      // Guard: reject filing if there is no real IT context in the conversation.
+      // Uses the same nonsenseCount as gibberish — any mix of gibberish + unrelated
+      // inputs counts toward the shared 3-strike limit.
+      if (!hasEnoughContext(rawDesc)) {
+        session.nonsenseCount = (session.nonsenseCount || 0) + 1;
+        if (session.nonsenseCount >= 3) {
+          const joke = NONSENSE_JOKES[Math.floor(Math.random() * NONSENSE_JOKES.length)];
+          return { reply: joke, session: {}, submitted: true };
+        }
+        const clarifyPrompts = [
+          'I\'d be happy to file an IT request, but I need a few more details first. ' +
+          'Could you describe the specific IT issue you\'re experiencing? ' +
+          '(e.g. which device, what problem, what you\'ve already tried)',
+          'I still need some IT-related details to file a request. ' +
+          'What device or system is having a problem, and what exactly is happening?',
+        ];
+        const clarifyReply = clarifyPrompts[session.nonsenseCount - 1];
+        session.history = appendHistory(session.history, message, clarifyReply);
+        return { reply: clarifyReply, session };
+      }
+      // Reset nonsense counter once valid IT context is confirmed
+      session.nonsenseCount = 0;
+
+      const formalDesc = paraphraseDescription(rawDesc);
+
+      const ticketData = {
+        name:            session.formData.name            || '',
+        position:        session.formData.position        || '',
+        department:      session.formData.department      || '',
+        departmentFull:  session.formData.departmentFull  || '',
+        supervisor:      session.formData.supervisor      || '',
+        supervisorEmail: session.formData.supervisorEmail || '',
+        userEmail:       session.formData.userEmail       || session.userEmail || '',
+        description:     formalDesc,
+        rawDescription:  rawDesc,
+        recType:         isOthers ? 'Others, Repair' : '',
+      };
+
+      const saved = saveTicket(ticketData);
+      const jrfNo = (saved.ok && saved.jrfNo) || '—';
+
+      const finalReply = saved.ok
+        ? '✅ Your IT Job Request has been submitted!\n\n' +
+          '📌 Ticket #' + jrfNo + '\n' +
+          '👤 ' + (ticketData.name     || '—') + '\n' +
+          '🏢 ' + (ticketData.departmentFull || ticketData.department || '—') + '\n' +
+          '👨‍💼 Supervisor: ' + (ticketData.supervisor || '—') + '\n' +
+          '📝 ' + rawDesc + '\n\n' +
+          'Your supervisor will receive an approval email shortly. Once approved, IT staff will be assigned to take action.\n\n' +
+          'You can check your ticket status anytime via 📋 My Tickets.'
+        : (saved.error || 'There was a problem saving your request. Please try again or contact the IT unit directly.');
+
+      // Prepend the visible Gemini reply (e.g. "Waste ink pad is full…") as a separate bubble.
+      // Only lock the chat (submitted: true) on actual success — rate-limit errors let the
+      // user start a new conversation instead of being permanently locked out.
+      session.history = appendHistory(session.history, message, finalReply);
+      const replies = [visibleReply, finalReply].filter(Boolean);
+      return { reply: finalReply, replies, session: {}, submitted: saved.ok };
+    }
+
+    // Identity not yet known — fall back to form collection.
+    // (Normally shouldn't happen since identity is pre-filled on page load.)
+    session.state    = 'collecting';
+    session.step     = 0;
+    session.formData = { description: prefillDesc };
     if (isOthers) session.formData.recType = 'Others, Repair';
 
-    // Intro message tells the user why we're asking these questions
     const introMessage =
       'I\'ll need a few details to fill out the IT Job Request Form. ' +
       'Once submitted, your supervisor will receive an approval email — then IT staff will be notified to take action.';
@@ -374,14 +455,13 @@ function handleChat(message, session) {
     const firstPrompt = getNextPrompt(session);
     const combined    = (visibleReply ? visibleReply + '\n\n' : '') + introMessage + '\n\n' + firstPrompt;
 
-    // Add the exchange to history
     session.history = appendHistory(session.history, message, combined);
-    // Return as separate replies so the UI renders each as a distinct bubble
     const replies = [visibleReply, introMessage, firstPrompt].filter(Boolean);
     return { reply: combined, replies, session };
   }
 
-  // Normal reply
+  // Normal reply — message was legitimate, reset the nonsense counter
+  session.nonsenseCount = 0;
   session.history = appendHistory(session.history, message, geminiReply);
   return { reply: geminiReply, session };
 }
@@ -401,13 +481,27 @@ function handleChat(message, session) {
 function handleQuickStart(type, session) {
   session.state           = 'collecting';
   session.step            = 0;
-  session.formData        = { recType: 'Others, Repair' };
+  // Preserve identity fields already pre-filled from Google account — only reset
+  // form-specific fields (description, recType). Wiping formData here would lose
+  // name/position/department/supervisor and cause the ticket to show "—" for all.
+  session.formData = {
+    name:            (session.formData && session.formData.name)            || '',
+    position:        (session.formData && session.formData.position)        || '',
+    department:      (session.formData && session.formData.department)      || '',
+    departmentFull:  (session.formData && session.formData.departmentFull)  || '',
+    supervisor:      (session.formData && session.formData.supervisor)      || '',
+    supervisorEmail: (session.formData && session.formData.supervisorEmail) || '',
+    userEmail:       (session.formData && session.formData.userEmail)       || '',
+    recType:         'Others, Repair',
+  };
   session.history         = [];
   session.quickStartSteps = true; // use QUICK_START_FORM_STEPS (description first)
+  session.quickStartType  = type; // stored so cancel can restart the same flow
 
   // Description prompt is shown immediately; customised per request type so the
   // user knows exactly what details to provide before we ask for their name.
   if (type === 'publication') {
+    session.quickStartLabel = 'Publication/Design Request';
     const prompt =
       'Please describe your publication or design request.\n' +
       '(e.g. type of material, purpose, key information to include — or let us know if you\'ve already sent the details to the IT unit.)';
@@ -415,23 +509,24 @@ function handleQuickStart(type, session) {
   }
 
   if (type === 'cctv') {
-    // Show the Data Privacy Act requirement first, then ask for a brief description
+    session.quickStartLabel = 'CCTV Viewing Request';
+    // Set cctv_letter_check state — must confirm letter before filing ticket
+    session.state = 'cctv_letter_check';
     const cctvNote =
       'CCTV viewing requests are governed by the Data Privacy Act.\n\n' +
-      'Please prepare a formal letter addressed to the Campus Director containing:\n' +
+      'Before I can file a ticket, the requesting party must prepare a formal letter ' +
+      'addressed to the Campus Director containing:\n' +
       '• Exact date and time range of the footage needed\n' +
       '• Camera location\n' +
       '• Reason for the request\n\n' +
-      'The Campus Director must approve the letter before IT can proceed. ' +
-      'In the meantime, I\'ll file a ticket to put this on record.';
-    const descPrompt =
-      'Please provide a brief description of your CCTV viewing request.\n' +
-      '(You may also let us know if you\'ve already submitted a formal letter to the Campus Director.)';
-    const replies = [cctvNote, descPrompt];
+      'The Campus Director must approve the letter before IT can proceed.';
+    const letterQuestion = 'Do you currently have a letter approved by the Campus Director? Reply yes or no.';
+    const replies = [cctvNote, letterQuestion];
     return { reply: replies.join('\n\n'), replies, session };
   }
 
   // Technical Assistance
+  session.quickStartLabel = 'Technical Assistance';
   const prompt =
     'Please describe the technical assistance you need.\n' +
     '(You may also let us know if you\'ve already provided the details to the IT unit.)';
@@ -450,6 +545,36 @@ function handleQuickStart(type, session) {
 function handleFormStep(message, session) {
   const steps = session.quickStartSteps ? QUICK_START_FORM_STEPS : FORM_STEPS;
   const step  = steps[session.step];
+
+  // --- Gibberish detection (name / position / department / supervisor only) ---
+  // Description is free-form text, so gibberish detection is skipped for it.
+  const GIBBERISH_JOKES = [
+    'Alright, I give up trying to decode keyboard poetry. 😄 Please start a new conversation when you\'re ready to type normally — I\'ll be here!',
+    'Three strikes and the keyboard wins! 🎹 My gibberish translator is currently on vacation. Start a new conversation when you\'re ready!',
+    'I think your cat may have walked across the keyboard one too many times. 🐱 Let\'s start fresh — begin a new conversation when you\'re ready!',
+  ];
+  const STEP_LABELS = {
+    name:       'full name',
+    position:   'position or designation',
+    department: 'department or office',
+    supervisor: 'immediate supervisor',
+  };
+  if (STEP_LABELS[step.key] && isGibberish(message)) {
+    session.gibberishCount = (session.gibberishCount || 0) + 1;
+    if (session.gibberishCount >= 3) {
+      // End the conversation with a joke after 3 consecutive gibberish inputs
+      const joke = GIBBERISH_JOKES[Math.floor(Math.random() * GIBBERISH_JOKES.length)];
+      return { reply: joke, session: {}, submitted: true };
+    }
+    const label = STEP_LABELS[step.key];
+    const warnings = [
+      'That doesn\'t look like a valid ' + label + '. Could you please try again?\n\n' + step.prompt,
+      'Hmm, that still doesn\'t look right. One more like that and I\'ll have to give up on us! 😅\n\n' + step.prompt,
+    ];
+    return { reply: warnings[session.gibberishCount - 1], session };
+  }
+  // Reset gibberish counter once the user types something valid
+  session.gibberishCount = 0;
 
   // Validate recommendation type (must be 1–10 or exact name)
   if (step.key === 'rec_type') {
@@ -472,20 +597,42 @@ function handleFormStep(message, session) {
       session.pendingEmployee = emp;
       session.state = 'confirm_name';
       const confirmMsg =
-        'I found "' + emp.matchedName + '" (' + emp.position + ', ' + emp.department + ') in our records. ' +
+        'I found "' + emp.matchedName + '" (' + emp.position + ', ' + (emp.departmentFull || emp.department) + ') in our records. ' +
         'Is this you? Reply "yes" to auto-fill your details, or "no" to enter them manually.';
       return { reply: confirmMsg, session };
     }
   } else if (step.key === 'department') {
     session.formData[step.key] = message;
     // Auto-fill supervisor; falls back to Campus Director for Chief-level positions
-    const lookup = resolveAutoSupervisor(session.formData.position || '', message);
+    const lookup = resolveAutoSupervisor(session.formData.position || '', message, session.formData.name || '');
     if (lookup && lookup.supervisorName) {
       session.formData.supervisor      = lookup.supervisorName;
       session.formData.supervisorEmail = lookup.supervisorEmail;
     }
   } else {
-    session.formData[step.key] = message;
+    if (step.key === 'description') {
+      // Context sufficiency check — ask once if too vague
+      if (!session.descriptionFollowUpAsked && !hasEnoughContext(message)) {
+        session.descriptionFollowUpAsked = true;
+        const followUp = session.quickStartLabel
+          ? (session.quickStartLabel.includes('Publication')
+              ? 'Could you share a few more details? For example: the title or topic, the occasion or event it\'s for, and when you need it.'
+              : session.quickStartLabel.includes('CCTV')
+              ? 'Could you briefly describe the purpose of the CCTV request? (e.g. incident investigation, security review)'
+              : 'Could you describe the issue in a bit more detail? Which device or system, what you were trying to do, and what happened.')
+          : 'Before I file the request, could you give me a bit more detail? Which device or system is affected, what exactly happens, and whether you\'ve already tried anything.';
+        return { reply: followUp, session };
+      }
+      // Build description from full conversation history, then formally paraphrase
+      const rawDescription = buildDescriptionFromHistory(session) || message;
+      const formalDescription = paraphraseDescription(
+        session.quickStartLabel ? session.quickStartLabel + ': ' + rawDescription : rawDescription
+      );
+      session.formData.rawDescription = rawDescription;
+      session.formData[step.key] = formalDescription;
+    } else {
+      session.formData[step.key] = message;
+    }
   }
 
   // After collecting description in a quick-start flow, show the form intro
@@ -525,10 +672,39 @@ function handleFormStep(message, session) {
       : { reply, session };
   }
 
-  // All fields collected — show confirmation
-  session.state = 'confirm';
+  // All fields collected — if identity is already verified, auto-file the ticket
+  // immediately without showing a confirmation prompt.
   const note = session.formData._nameNote || null;
   delete session.formData._nameNote;
+
+  if (session.identityVerified) {
+    const saved   = saveTicket(session.formData);
+    const jrfNo   = (saved.ok && saved.jrfNo) || '—';
+    const rawDesc = (session.formData.rawDescription || session.formData.description || '');
+
+    const resultMsg = saved.ok
+      ? '✅ Your IT Job Request has been submitted!\n\n' +
+        '📌 Ticket #' + jrfNo + '\n' +
+        '👤 ' + (session.formData.name || '—') + '\n' +
+        '🏢 ' + (session.formData.departmentFull || session.formData.department || '—') + '\n' +
+        '👨‍💼 Supervisor: ' + (session.formData.supervisor || '—') + '\n' +
+        '📝 ' + rawDesc + '\n\n' +
+        'Your supervisor will receive an approval email shortly. Once approved, IT staff will be assigned to take action.\n\n' +
+        'You can check your ticket status anytime via 📋 My Tickets.'
+      : (saved.error || 'There was a problem saving your request. Please try again or contact the IT unit directly.');
+
+    const bubbles = [];
+    if (note) bubbles.push(note);
+    bubbles.push(resultMsg);
+    const reply = bubbles.join('\n\n');
+    // Only lock the chat on success — rate-limit or other errors let user retry/start over
+    return bubbles.length > 1
+      ? { reply, replies: bubbles, session: {}, submitted: saved.ok }
+      : { reply, session: {}, submitted: saved.ok };
+  }
+
+  // Identity not pre-filled — fall back to confirmation step
+  session.state = 'confirm';
   const confirmMsg = buildConfirmationMessage(session.formData);
   if (note) {
     return { reply: note + '\n\n' + confirmMsg, replies: [note, confirmMsg], session };
@@ -553,21 +729,100 @@ function getNextPrompt(session) {
 }
 
 /**
+ * Handles the cctv_letter_check state — asks if the user has a Director-approved letter.
+ * Yes → proceed to description step.
+ * No  → explain requirement, end conversation (no ticket filed).
+ * Unrecognised → re-ask once.
+ */
+function handleCctvLetterCheck(message, session) {
+  const lower = message.toLowerCase().trim();
+
+  // Yes phrases (English + Bisaya/Filipino)
+  const yesPatterns = ['ok', 'yes', 'meron', 'naa na', 'naa ko', 'i have', 'i will',
+    'got it', 'noted', "i'll prepare", 'oo', 'sige', 'ok na', 'go', 'i do',
+    'i already have', 'already approved', 'approved na'];
+
+  // No phrases (English + Bisaya/Filipino)
+  const noPatterns = ["wala pa", "i don't have", "no letter", "wala ko letter",
+    "i haven't", 'not yet', 'wala', 'dili pa', 'wala ko', 'dili ko',
+    'not approved', 'no', 'wala gyud', 'dili pa ko', 'wala pa ko'];
+
+  const isYes = yesPatterns.some(function(p) { return lower.includes(p); });
+  const isNo  = noPatterns.some(function(p) { return lower.includes(p); });
+
+  if (isNo || (!isYes && session.cctvFollowUpAsked)) {
+    // No letter → explain and end
+    return {
+      reply:
+        'Please prepare a formal letter addressed to the Campus Director containing ' +
+        'the exact date, time range, camera location, and reason for the footage review. ' +
+        'Once the Campus Director approves your letter, you may return here to file the ' +
+        'IT Job Request. The IT unit cannot proceed without the Director\'s approval.',
+      session: {},
+      submitted: true, // lock chat
+    };
+  }
+
+  if (isYes) {
+    // Has letter → proceed to description collection
+    session.state = 'collecting';
+    session.step  = 0;
+    if (!session.formData) session.formData = {};
+    session.formData.recType = 'Others, Repair';
+    const descPrompt =
+      'Please provide a brief description of your CCTV viewing request.\n' +
+      '(Include: the date/time range of the footage needed, camera location, and reason.)';
+    return { reply: descPrompt, session: session };
+  }
+
+  // Unrecognised — re-ask once
+  session.cctvFollowUpAsked = true;
+  return {
+    reply:
+      'Do you currently have a letter approved by the Campus Director for this CCTV request? ' +
+      'Reply yes or no.',
+    session: session,
+  };
+}
+
+/**
  * Handles the yes/no confirmation before saving the ticket.
  */
 function handleConfirm(message, session) {
   const lower = message.toLowerCase().trim();
 
-  if (lower === 'yes' || lower === 'y' || lower === 'confirm') {
-    const saved = saveTicket(session.formData);
-    const jrfNo = session.formData._jrfNo || '—';
-    const reply = saved
-      ? `Your IT Job Request has been submitted!\n\nJRF #: ${jrfNo}\n\nOur IT staff will get back to you shortly.`
-      : 'There was a problem saving your request. Please contact IT directly or try again.';
-    return { reply, session: {}, submitted: saved }; // full reset; submitted flag tells UI to lock the chat
+  if (lower === 'yes' || lower === 'y' || lower === 'confirm' ||
+      lower === 'oo' || lower === 'oo na' || lower === 'sige' || lower === 'sige na' ||
+      lower === 'naa na' || lower === 'ok na' || lower === 'go na' || lower === 'laban' ||
+      lower === 'mao na' || lower === 'tama na') {
+    const saved  = saveTicket(session.formData);
+    const jrfNo  = (saved.ok && saved.jrfNo) || '—';
+    const problemSummary = (session.formData.rawDescription || session.formData.description || '').substring(0, 60);
+    const reply = saved.ok
+      ? '✅ Your IT Job Request has been submitted successfully!\n\n' +
+        '📌 Ticket number: ' + jrfNo + '\n' +
+        '📝 Request: ' + problemSummary + ((session.formData.rawDescription || '').length > 60 ? '…' : '') + '\n' +
+        '👤 Status: Pending supervisor approval\n\n' +
+        'Your supervisor will receive an approval email shortly.\n' +
+        'You can track this ticket using the 📋 My Tickets button.'
+      : (saved.error || 'There was a problem saving your request. Please contact IT directly or try again.');
+    // Only lock the chat on success — rate-limit errors let the user start a new conversation
+    return { reply, session: {}, submitted: saved.ok };
   }
 
-  if (lower === 'no' || lower === 'n' || lower === 'cancel') {
+  if (lower === 'no' || lower === 'n' || lower === 'cancel' ||
+      lower === 'dili' || lower === 'dili pa' || lower === 'wala pa' ||
+      lower === 'wala' || lower === 'wala ko' || lower === 'dili ko' ||
+      lower === 'wala gyud' || lower === 'dili na') {
+    // If the ticket came from a quick-start button, restart that same flow
+    // (re-ask the description question) instead of resetting to neutral.
+    const qsType = session.quickStartType;
+    if (qsType) {
+      const restart = handleQuickStart(qsType, {});
+      const cancelNote = 'No problem — your request was not submitted.';
+      const replies = [cancelNote].concat(restart.replies || [restart.reply]);
+      return { reply: cancelNote, replies, session: restart.session };
+    }
     return {
       reply: 'No problem — your request was not submitted. Would you like to start over or is there anything else I can help you with?',
       session: {}, // full reset
@@ -597,12 +852,13 @@ function handleConfirmName(message, session) {
   const isYes = lower === 'yes' || lower === 'y';
 
   if (isYes) {
-    // Apply auto-fill from the matched employee record
+    // Use the full canonical name from the sheet, not whatever the user typed
+    session.formData.name       = emp.matchedName;
     session.formData.position   = emp.position;
     session.formData.department = emp.department;
     // resolveAutoSupervisor tries the Departments sheet first; falls back to the
-    // Campus Director for Chief-level positions with no department entry.
-    const supLookup = resolveAutoSupervisor(emp.position, emp.department);
+    // Campus Director for Chief-level positions (detected via self-referential lookup).
+    const supLookup = resolveAutoSupervisor(emp.position, emp.department, emp.matchedName);
     if (supLookup && supLookup.supervisorName) {
       session.formData.supervisor      = supLookup.supervisorName;
       session.formData.supervisorEmail = supLookup.supervisorEmail;
@@ -632,16 +888,148 @@ function handleConfirmName(message, session) {
   return { reply: nextPrompt, session };
 }
 
+/**
+ * Lightweight Gemini call to check if a message has enough detail to file a ticket.
+ * Returns true ('yes') or false ('no'). On API error: returns true (fail open).
+ */
+function hasEnoughContext(message) {
+  try {
+    const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+    if (!apiKey) return true;
+
+    const systemPrompt =
+      'You are checking if an IT help desk request has enough detail to file an official form. ' +
+      'Reply ONLY with "yes" or "no". ' +
+      'Answer "yes" if the message contains: what the problem/request is AND at least one specific detail ' +
+      '(device/system affected, event/occasion, what happened, when it started, what was already tried). ' +
+      'Answer "no" if too vague, under 8 words, or no context — e.g. "broken", "not working", ' +
+      '"need help", "poster", "CCTV", "assistance". ' +
+      'Message: ' + message;
+
+    const payload = {
+      contents: [{ role: 'user', parts: [{ text: systemPrompt }] }],
+      generationConfig: { temperature: 0.1, maxOutputTokens: 4 },
+    };
+    const response = UrlFetchApp.fetch(GEMINI_ENDPOINT + '?key=' + apiKey, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    });
+    const text = JSON.parse(response.getContentText())
+      ?.candidates?.[0]?.content?.parts?.[0]?.text || 'yes';
+    return text.trim().toLowerCase().startsWith('y');
+  } catch (err) {
+    console.error('hasEnoughContext error: ' + err);
+    return true; // fail open
+  }
+}
+
+/**
+ * Builds a comprehensive description from the full conversation history.
+ * Used instead of a single-field answer to capture context from the whole chat.
+ * Falls back to session.formData.description on API error.
+ */
+function buildDescriptionFromHistory(session) {
+  try {
+    const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+    if (!apiKey || !session.history || session.history.length === 0) {
+      return session.formData && session.formData.description ? session.formData.description : '';
+    }
+
+    const historyText = session.history
+      .map(function(turn) { return (turn.role === 'user' ? 'User: ' : 'Bot: ') + turn.text; })
+      .join('\n');
+
+    const systemPrompt =
+      'You are extracting the core IT problem or request from a conversation log. ' +
+      'Read the full conversation and write one comprehensive description of what the user needs. ' +
+      'Include: what the problem/request is, which device/system is involved (if mentioned), ' +
+      'what has already been tried (if mentioned), relevant occasion/event details (for design), ' +
+      'relevant footage date/time/location (for CCTV). ' +
+      'Rules: use only information from the conversation, plain English or Filipino, ' +
+      'maximum 4 sentences, output ONLY the description text.\n' +
+      'Conversation:\n' + historyText;
+
+    const payload = {
+      contents: [{ role: 'user', parts: [{ text: systemPrompt }] }],
+      generationConfig: { temperature: 0.3, maxOutputTokens: 256 },
+    };
+    const response = UrlFetchApp.fetch(GEMINI_ENDPOINT + '?key=' + apiKey, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    });
+    const text = JSON.parse(response.getContentText())
+      ?.candidates?.[0]?.content?.parts?.[0]?.text;
+    return text ? text.trim() : (session.formData && session.formData.description ? session.formData.description : '');
+  } catch (err) {
+    console.error('buildDescriptionFromHistory error: ' + err);
+    return session.formData && session.formData.description ? session.formData.description : '';
+  }
+}
+
+/**
+ * Formally paraphrases a raw IT request description into Philippine government document style.
+ * Returns rawText unchanged on API error.
+ */
+function paraphraseDescription(rawText) {
+  try {
+    if (!rawText) return rawText;
+    const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+    if (!apiKey) return rawText;
+
+    const systemPrompt =
+      'You are a formal document editor for a Philippine government school (PSHS ZRC). ' +
+      'Rewrite the following IT problem or service request description in clear, formal ' +
+      'Filipino-English — the style used in Philippine government office documents. ' +
+      'Rules:\n' +
+      '- Keep all technical details and specifics exactly as stated\n' +
+      '- Do not add information not present in the input\n' +
+      '- Do not remove any detail\n' +
+      '- Begin with: "The requesting party reports that..." or "The unit/device..." ' +
+      '  or "A request has been made for..." depending on context\n' +
+      '- Maximum 3 sentences\n' +
+      '- Output ONLY the rewritten text, nothing else\n' +
+      'Input: ' + rawText;
+
+    const payload = {
+      contents: [{ role: 'user', parts: [{ text: systemPrompt }] }],
+      generationConfig: { temperature: 0.3, maxOutputTokens: 256 },
+    };
+    const response = UrlFetchApp.fetch(GEMINI_ENDPOINT + '?key=' + apiKey, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    });
+    const text = JSON.parse(response.getContentText())
+      ?.candidates?.[0]?.content?.parts?.[0]?.text;
+    return text ? text.trim() : rawText;
+  } catch (err) {
+    console.error('paraphraseDescription error: ' + err);
+    return rawText;
+  }
+}
+
 function buildConfirmationMessage(data) {
-  return (
-    'Please confirm your IT Job Request before submitting:\n\n' +
-    `Name:                ${data.name || '—'}\n` +
-    `Position:            ${data.position || '—'}\n` +
-    `Department/Office:   ${data.department || '—'}\n` +
-    `Supervisor:          ${data.supervisor || '—'}\n` +
-    `Problem Description: ${data.description || '—'}\n\n` +
-    'Reply "yes" to submit or "no" to cancel.'
-  );
+  const deptDisplay = data.departmentFull || data.department || '—';
+  const lines = [
+    'Please confirm your IT Job Request before submitting:\n',
+    'Name:              ' + (data.name       || '—'),
+    'Position:          ' + (data.position   || '—'),
+    'Department/Office: ' + deptDisplay,
+    'Supervisor:        ' + (data.supervisor || '—'),
+  ];
+  if (data.rawDescription && data.rawDescription !== data.description) {
+    lines.push('\n📋 Problem (as described):\n' + data.rawDescription);
+    lines.push('\n📝 Problem (formal for form):\n' + (data.description || '—'));
+  } else {
+    lines.push('\nProblem Description:\n' + (data.description || '—'));
+  }
+  lines.push('\nReply "yes" to submit or "no" to cancel.');
+  return lines.join('\n');
 }
 
 // =============================================================================
@@ -714,7 +1102,9 @@ function callGemini(message, history, kbContext) {
   // --- System instruction ---
   const systemText =
     'You are the IT Support Chatbot for PSHS Zamboanga Regional Campus (PSHS ZRC). ' +
-    'You help staff troubleshoot IT issues and file IT Job Request Forms (ITJRF).\n\n' +
+    'You help staff troubleshoot IT issues and file IT Job Request Forms (ITJRF).\n' +
+    'The user has been identified via their Google account. ' +
+    'Name, position, department, and supervisor are already known — do NOT ask for them.\n\n' +
 
     // ── CRITICAL OVERRIDES — read these first, they override everything else ──
     'CRITICAL OVERRIDES (apply before all other rules):\n\n' +
@@ -742,15 +1132,40 @@ function callGemini(message, history, kbContext) {
     '1. Be concise, professional, and friendly.\n' +
     '2. When answering technical questions, use the Knowledge Base entries provided.\n' +
     '3. If no KB entry is relevant, use your own knowledge to help troubleshoot.\n' +
-    '4. When the issue clearly requires IT intervention OR the user confirms they want to file a request, ' +
-       'end your reply with: %%FILE_TICKET:<one-sentence summary of the problem>%% — do not mention this signal to the user.\n' +
-       '   a. Send it AS SOON AS the problem is understood — do NOT ask for name, position, department, or supervisor first.\n' +
-       '   b. NEVER send it in the same reply where you are still asking diagnostic questions.\n' +
-       '   c. Once IT action is clearly needed, send the signal immediately.\n' +
+    '4. For IT Issue / Repair requests:\n' +
+       '   a. FIRST provide troubleshooting steps using Knowledge Base entries or your own knowledge.\n' +
+       '   b. Ask the user to try the steps and confirm the result before filing a ticket.\n' +
+       '   c. Only send %%FILE_TICKET:<one-sentence summary>%% when:\n' +
+       '      - The user explicitly asks to file (e.g. "file a ticket", "submit", "i-submit na",\n' +
+       '        "mag-ticket na", "i give up", "please file", "can you file")\n' +
+       '      - The user confirms troubleshooting failed (e.g. "still not working", "hindi pa rin",\n' +
+       '        "wala gihapon", "di pa gumana", "na-try na", "same problem", "wala gyud",\n' +
+       '        "dili pa gumana", "di jud mo-on")\n' +
+       '      - The problem clearly requires physical intervention (hardware broken,\n' +
+       '        needs on-site inspection, requires parts replacement)\n' +
+       '   d. NEVER send %%FILE_TICKET%% in the same reply as troubleshooting questions.\n' +
+       '   e. For Publication, CCTV, and Technical Assistance flows: send %%FILE_TICKET%%\n' +
+       '      immediately after the description is collected — no troubleshooting needed.\n' +
     '5. Do not make up ticket numbers or form details.\n' +
     '6. This chatbot does NOT support file uploads. If a user mentions attaching files, inform them and ask them to describe in text.\n' +
     '7. CCTV viewing requests are governed by the Data Privacy Act. First inform the user they need a formal letter to the Campus Director with the exact date, time range, camera location, and reason — the Director must approve before IT can proceed. Do NOT ask for CCTV details. Then end with %%FILE_TICKET:<description>%%.\n\n' +
 
+    '8. Language: You understand and respond in Filipino, English, and Bisaya/Cebuano.\n' +
+       '   Detect the user\'s language and reply in the SAME language or mix if they code-switch.\n' +
+       '   Common Bisaya IT phrases:\n' +
+       '   - dili mo-on / dili mo bukas = won\'t turn on\n' +
+       '   - dugay kaayo = very slow\n' +
+       '   - wala signal / wala internet = no connection\n' +
+       '   - na-freeze / natulog = frozen/unresponsive\n' +
+       '   - dili ma-print = cannot print\n' +
+       '   - naputol = disconnected / cut off\n' +
+       '   - di ko mabukas = I can\'t open it\n' +
+       '   - wala gyud = nothing works / still not working\n' +
+       '   - na-try na nako = I already tried that\n' +
+       '   - naa ko problema sa = I have a problem with\n' +
+       '   - unsay buhaton = what should I do\n' +
+       '   - nag-restart ra = keeps restarting\n' +
+       '   - wala na = doesn\'t work anymore\n\n' +
     'ITJRF Recommendation Types (for reference):\n' +
     RECOMMENDATION_TYPES.map((t, i) => `${i + 1}. ${t}`).join('\n');
 
@@ -827,12 +1242,41 @@ function callGemini(message, history, kbContext) {
  *   Recommendation Type  |  Status  |  Assigned Staff  |  Date Completed
  *
  * @param {object} data - formData collected during form flow
- * @returns {boolean} true on success
+ * @returns {{ ok: boolean, jrfNo?: string, error?: string }}
  */
 function saveTicket(data) {
   try {
     // Enforce global submission rate limit before writing to the sheet
     checkGlobalRateLimit();
+
+    // Per-user rate limit: max 3 submissions per day.
+    // IT staff (IT_STAFF_EMAIL) are exempt so they can test without hitting the limit.
+    const itStaffEmails = (PropertiesService.getScriptProperties().getProperty('IT_STAFF_EMAIL') || '')
+      .split(',').map(function(e) { return e.trim().toLowerCase(); }).filter(Boolean);
+    const isITStaff = data.userEmail &&
+      itStaffEmails.includes(data.userEmail.toLowerCase().trim());
+
+    if (data.userEmail && !isITStaff) {
+      const userRateKey = 'rate_user_' + data.userEmail;
+      const todayCount  = parseInt(CacheService.getScriptCache().get(userRateKey) || '0', 10);
+      if (todayCount >= 3) {
+        // Calculate hours remaining until midnight PHT (UTC+8)
+        const nowPht           = Math.floor(Date.now() / 1000) + 28800;
+        const secondsUntilReset = Math.floor(86400 - (nowPht % 86400));
+        const hoursLeft         = Math.ceil(secondsUntilReset / 3600);
+        return {
+          ok: false,
+          error:
+            'You have already submitted 3 IT Job Requests today. ' +
+            'Your limit resets in about ' + hoursLeft + ' hour(s). ' +
+            'If this is urgent, please contact the IT unit directly.',
+        };
+      }
+      // TTL = seconds until midnight PHT (UTC+8)
+      const nowPht = Math.floor(Date.now() / 1000) + 28800;
+      const ttl    = Math.floor(86400 - (nowPht % 86400));
+      CacheService.getScriptCache().put(userRateKey, String(todayCount + 1), ttl);
+    }
 
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     let sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
@@ -857,17 +1301,25 @@ function saveTicket(data) {
         'Target Date',
         'Others Description',
         'Service Location',
+        'Raw Description',    // col Q — raw unparaphrased description from chat
+        'Requester Email',    // col R — Google account email
       ]);
       sheet.setFrozenRows(1);
     }
 
-    // Auto-increment JRF number: count existing data rows + 1
-    const lastRow = sheet.getLastRow();          // includes header
-    const jrfNo   = lastRow;                     // row 1 = header → first ticket = 1
-    const jrfStr  = String(jrfNo).padStart(4, '0'); // e.g. "0001"
+    // Ensure col Q and R headers exist for existing sheets (no-op if already present)
+    const headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    if (headerRow.length < 17 || !headerRow[16]) {
+      sheet.getRange(1, 17).setValue('Raw Description');
+    }
+    if (headerRow.length < 18 || !headerRow[17]) {
+      sheet.getRange(1, 18).setValue('Requester Email');
+    }
 
-    // Store jrfNo back so the confirm message can display it
-    data._jrfNo = jrfStr;
+    // Auto-increment JRF number: count existing data rows + 1
+    const lastRow = sheet.getLastRow();             // includes header
+    const jrfNo   = lastRow;                        // row 1 = header → first ticket = 1
+    const jrfStr  = String(jrfNo).padStart(4, '0'); // e.g. "0001"
 
     const today = Utilities.formatDate(
       new Date(),
@@ -878,18 +1330,22 @@ function saveTicket(data) {
     sheet.appendRow([
       jrfStr,
       today,
-      data.name        || '',
-      data.position    || '',
-      data.supervisor  || '',
-      data.description || '',
-      data.recType     || '',  // Recommendation Type — pre-filled for known types; otherwise set by IT staff
+      data.name           || '',
+      data.position       || '',
+      data.supervisor     || '',
+      data.description    || '',
+      data.recType        || '',  // Recommendation Type — pre-filled for known types; otherwise set by IT staff
       'Pending Supervisor Approval', // default Status
-      '',                // Assigned Staff — filled by IT staff later
-      '',                // Date Completed — filled by IT staff later
-      '',                // Assessment — filled by IT staff later
-      '',                // Action Taken — filled by IT staff later
-      '',                // Task Result — filled by IT staff later
-      '',                // Target Date — filled by IT staff later
+      '',                           // Assigned Staff — filled by IT staff later
+      '',                           // Date Completed — filled by IT staff later
+      '',                           // Assessment — filled by IT staff later
+      '',                           // Action Taken — filled by IT staff later
+      '',                           // Task Result — filled by IT staff later
+      '',                           // Target Date — filled by IT staff later
+      '',                           // Others Description — filled by IT staff later
+      '',                           // Service Location — filled by IT staff later
+      data.rawDescription || '',    // col Q — raw description before formal paraphrase
+      data.userEmail      || '',    // col R — requester Google account email
     ]);
 
     // Send supervisor approval email
@@ -908,11 +1364,11 @@ function saveTicket(data) {
       Logger.log('Supervisor approval email error: ' + emailErr);
     }
 
-    Logger.log(`Ticket saved: JRF #${jrfStr}`);
-    return true;
+    Logger.log('Ticket saved: JRF #' + jrfStr);
+    return { ok: true, jrfNo: jrfStr };
   } catch (err) {
     Logger.log('saveTicket error: ' + err + '\n' + err.stack);
-    return false;
+    return { ok: false, error: 'There was a problem saving your request. Please try again or contact the IT unit directly.' };
   }
 }
 
@@ -937,6 +1393,50 @@ function resolveRecType(answer) {
   const lower = trimmed.toLowerCase();
   const found = RECOMMENDATION_TYPES.find(t => t.toLowerCase().includes(lower));
   return found || null;
+}
+
+/**
+ * Detects keyboard-mashing / gibberish input.
+ * Returns true if the text looks like random key presses rather than a real answer.
+ *
+ * Three checks (any one triggers gibberish = true):
+ *   1. The whole string is one short repeating pattern (e.g. "asdasd", "vcvcvcvc").
+ *   2. Very few unique characters relative to total length (e.g. "asdasdvcvcv" — only 5 unique chars).
+ *   3. Extremely low vowel ratio for longer strings (e.g. "qwrtpsdfg").
+ *   4. A run of 6+ consecutive consonants (e.g. "sdfjklqwrt").
+ *
+ * Short strings (< 4 chars) are never flagged — they may be abbreviations like "SSD" or "OCD".
+ */
+function isGibberish(text) {
+  if (!text) return false;
+  const trimmed = text.trim();
+  if (trimmed.length < 4) return false; // too short to judge — could be a dept code
+
+  const cleaned = trimmed.toLowerCase().replace(/[^a-z]/g, '');
+  if (cleaned.length < 4) return false;
+
+  // 1. Whole string (with up to 3 trailing chars) is one repeating 2–4 char n-gram
+  //    e.g. "asdasdasd", "vcvcvcvc", "sdfsdf"
+  if (cleaned.length >= 6 && /^(.{2,4})\1+.{0,3}$/.test(cleaned)) return true;
+
+  // 2. Very few unique characters relative to length (threshold: < 40% for strings ≥ 8 chars)
+  //    e.g. "asdasdasdvcvcv" — 5 unique chars out of 14 = 35.7%
+  if (cleaned.length >= 8) {
+    const uniqueRatio = new Set(cleaned.split('')).size / cleaned.length;
+    if (uniqueRatio < 0.40) return true;
+  }
+
+  // 3. Very low vowel ratio for strings longer than 6 chars (threshold: < 10%)
+  //    e.g. "qwrtpsdfg" — 0 vowels
+  if (cleaned.length > 6) {
+    const vowelRatio = (cleaned.match(/[aeiou]/g) || []).length / cleaned.length;
+    if (vowelRatio < 0.10) return true;
+  }
+
+  // 4. Consecutive consonant run of 6 or more (e.g. "sdfjklqw")
+  if (/[^aeiou]{6,}/.test(cleaned)) return true;
+
+  return false;
 }
 
 /**
@@ -1316,22 +1816,211 @@ function lookupDepartment(dept) {
  * @param {string} department - Department/Office code from the Employees sheet
  * @returns {{ supervisorName, supervisorEmail, fullName } | null}
  */
-function resolveAutoSupervisor(position, department) {
+function resolveAutoSupervisor(position, department, employeeName) {
   // 1. Try the Departments sheet first
   const deptLookup = lookupDepartment(department);
-  if (deptLookup && deptLookup.supervisorName) return deptLookup;
-
-  // 2. Chief-level positions report directly to the Campus Director
-  if (position && /chief/i.test(String(position))) {
-    const directorEmail = PropertiesService.getScriptProperties().getProperty('DIRECTOR_EMAIL') || '';
-    return {
-      supervisorName:  'Edman H. Gallamaso',
-      supervisorEmail: directorEmail,
-      fullName:        'Campus Director',
-    };
+  if (deptLookup && deptLookup.supervisorName) {
+    // If the Departments sheet lists this employee as their OWN department's supervisor,
+    // they are a division head (e.g. Milo S. Saldon, Mary Sheryl M. Saldon-Raznee,
+    // Keisel Van Valerie V. Gamil) — their supervisor is the Campus Director, not themselves.
+    const isSelf = employeeName &&
+      deptLookup.supervisorName.toLowerCase().trim() === String(employeeName).toLowerCase().trim();
+    if (!isSelf) return deptLookup;
+    // Fall through to Campus Director
   }
 
-  return null;
+  // 2. Fall back to the Campus Director when no Departments entry is found,
+  //    or when the employee IS the listed supervisor (division head).
+  const directorEmail = PropertiesService.getScriptProperties().getProperty('DIRECTOR_EMAIL') || '';
+  return {
+    supervisorName:  'Edman H. Gallamaso',
+    supervisorEmail: directorEmail,
+    fullName:        'Campus Director',
+  };
+}
+
+/**
+ * Returns the identity of the currently signed-in user by reading their Google
+ * account email and looking it up in the Employees sheet (col D).
+ * Called from Index.html on page load via google.script.run.
+ *
+ * Returns one of:
+ *   { email, name, position, department, departmentFull, supervisor, supervisorEmail }
+ *   { error: 'not_signed_in' }
+ *   { error: 'wrong_domain', domain }
+ *   { error: 'not_in_employees', email }
+ */
+function getUserIdentity() {
+  try {
+    const email = Session.getActiveUser().getEmail();
+    if (!email) return { error: 'not_signed_in' };
+
+    // Optional domain restriction
+    const allowedDomain = PropertiesService.getScriptProperties().getProperty('ALLOWED_DOMAIN') || '';
+    if (allowedDomain && !email.toLowerCase().endsWith('@' + allowedDomain.toLowerCase())) {
+      return { error: 'wrong_domain', domain: allowedDomain };
+    }
+
+    const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const sheet = ss.getSheetByName('Employees');
+    if (!sheet) return { error: 'not_in_employees', email };
+
+    const data       = sheet.getDataRange().getValues();
+    const emailLower = email.toLowerCase().trim();
+
+    for (let i = 1; i < data.length; i++) {
+      const rowEmail = String(data[i][3] || '').toLowerCase().trim(); // col D
+      if (rowEmail !== emailLower) continue;
+
+      const name     = String(data[i][0] || '');
+      const position = String(data[i][1] || '');
+      const deptCode = String(data[i][2] || '');
+
+      // Resolve supervisor and full department name from Departments sheet
+      const deptLookup = lookupDepartment(deptCode);
+      let supervisorName  = '';
+      let supervisorEmail = '';
+      let departmentFull  = deptCode; // fallback
+
+      if (deptLookup) {
+        // Self-reference check: if this employee IS the listed supervisor, use Director
+        const isSelf = deptLookup.supervisorName &&
+          deptLookup.supervisorName.toLowerCase().trim() === name.toLowerCase().trim();
+        if (isSelf) {
+          supervisorName  = 'Edman H. Gallamaso';
+          supervisorEmail = PropertiesService.getScriptProperties().getProperty('DIRECTOR_EMAIL') || '';
+        } else {
+          supervisorName  = deptLookup.supervisorName;
+          supervisorEmail = deptLookup.supervisorEmail;
+        }
+        departmentFull = deptLookup.fullName || deptCode;
+      } else {
+        // No Departments entry → use Campus Director
+        supervisorName  = 'Edman H. Gallamaso';
+        supervisorEmail = PropertiesService.getScriptProperties().getProperty('DIRECTOR_EMAIL') || '';
+      }
+
+      Logger.log('getUserIdentity: found ' + name + ' <' + email + '>');
+      return {
+        email:          email,
+        name:           name,
+        position:       position,
+        department:     deptCode,
+        departmentFull: departmentFull,
+        supervisor:     supervisorName,
+        supervisorEmail: supervisorEmail,
+      };
+    }
+
+    // Email not found in Employees sheet
+    Logger.log('getUserIdentity: email not in Employees sheet: ' + email);
+    return { error: 'not_in_employees', email: email };
+  } catch (err) {
+    console.error('getUserIdentity error: ' + err);
+    return { error: 'not_signed_in' };
+  }
+}
+
+/**
+ * Returns the signed-in user's email and whether they are an authorized IT staff member.
+ * Called from Dashboard.html on page load.
+ */
+function getDashboardUser() {
+  try {
+    const email = Session.getActiveUser().getEmail();
+    if (!email) return { email: '', authorized: false };
+    const allowedEmails = (PropertiesService.getScriptProperties().getProperty('IT_STAFF_EMAIL') || '')
+      .split(',').map(function(e) { return e.trim().toLowerCase(); }).filter(Boolean);
+    return { email: email, authorized: allowedEmails.includes(email.toLowerCase().trim()) };
+  } catch (err) {
+    console.error('getDashboardUser error: ' + err);
+    return { email: '', authorized: false };
+  }
+}
+
+/**
+ * Returns recent ticket status updates for a given requester email (col R).
+ * Only returns tickets not in 'Pending Supervisor Approval' status.
+ * Used by the chatbot to show status updates when user opens the page.
+ *
+ * @param {string} email - Requester's Google account email
+ * @returns {Array} Up to 5 most recent tickets with status changes
+ */
+function getTicketUpdates(email) {
+  try {
+    if (!email) return [];
+    const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
+    if (!sheet) return [];
+
+    const data    = sheet.getDataRange().getValues();
+    const results = [];
+    const emailLower = email.toLowerCase().trim();
+
+    for (let i = 1; i < data.length; i++) {
+      const rowEmail = String(data[i][17] || '').toLowerCase().trim(); // col R
+      if (rowEmail !== emailLower) continue;
+      const status = String(data[i][7] || '');
+      if (status === 'Pending Supervisor Approval') continue;
+
+      results.push({
+        jrfNo:         String(data[i][0]),
+        problem:       String(data[i][5] || ''),
+        status:        status,
+        assignedStaff: String(data[i][8]  || ''),
+        targetDate:    data[i][13] ? Utilities.formatDate(new Date(data[i][13]), Session.getScriptTimeZone(), 'MM/dd/yyyy') : '',
+        dateCompleted: data[i][9]  ? Utilities.formatDate(new Date(data[i][9]),  Session.getScriptTimeZone(), 'MM/dd/yyyy') : '',
+      });
+    }
+
+    // Sort by JRF # descending, return top 5
+    results.sort(function(a, b) { return Number(b.jrfNo) - Number(a.jrfNo); });
+    return results.slice(0, 5);
+  } catch (err) {
+    console.error('getTicketUpdates error: ' + err);
+    return [];
+  }
+}
+
+/**
+ * Returns ALL tickets for a given requester email (col R), all statuses.
+ * Used by the My Tickets panel in the chatbot UI.
+ *
+ * @param {string} email - Requester's Google account email
+ * @returns {Array} All tickets for this email, sorted by JRF # descending
+ */
+function getMyTickets(email) {
+  try {
+    if (!email) return [];
+    const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
+    if (!sheet) return [];
+
+    const data    = sheet.getDataRange().getValues();
+    const results = [];
+    const emailLower = email.toLowerCase().trim();
+
+    for (let i = 1; i < data.length; i++) {
+      const rowEmail = String(data[i][17] || '').toLowerCase().trim(); // col R
+      if (rowEmail !== emailLower) continue;
+      results.push({
+        jrfNo:          String(data[i][0]),
+        date:           data[i][1] ? Utilities.formatDate(new Date(data[i][1]), Session.getScriptTimeZone(), 'MM/dd/yyyy') : '',
+        problem:        String(data[i][5] || ''),
+        status:         String(data[i][7] || ''),
+        recommendation: String(data[i][6] || ''),
+        assignedStaff:  String(data[i][8]  || ''),
+        targetDate:     data[i][13] ? Utilities.formatDate(new Date(data[i][13]), Session.getScriptTimeZone(), 'MM/dd/yyyy') : '',
+        dateCompleted:  data[i][9]  ? Utilities.formatDate(new Date(data[i][9]),  Session.getScriptTimeZone(), 'MM/dd/yyyy') : '',
+      });
+    }
+
+    results.sort(function(a, b) { return Number(b.jrfNo) - Number(a.jrfNo); });
+    return results;
+  } catch (err) {
+    console.error('getMyTickets error: ' + err);
+    return [];
+  }
 }
 
 /**
@@ -1646,6 +2335,134 @@ function generateFormPdf(authToken, jrfNo) {
   return base64;
 }
 
+
+// =============================================================================
+// Operational / Maintenance Functions
+// =============================================================================
+
+/**
+ * Sends overdue ticket reminder emails to assigned IT staff.
+ * A ticket is overdue when: status = 'In Progress' AND target date is set AND before today.
+ * Set up as a daily time-driven trigger (8:00–9:00 AM).
+ * Skip if CacheService key 'overdue_reminded_[jrfNo]' exists (20-hour TTL).
+ */
+function sendOverdueReminders() {
+  const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
+  if (!sheet) return;
+
+  const data    = sheet.getDataRange().getValues();
+  const today   = new Date();
+  const cache   = CacheService.getScriptCache();
+  const itEmail = PropertiesService.getScriptProperties().getProperty('IT_STAFF_EMAIL') || '';
+  let   count   = 0;
+
+  for (let i = 1; i < data.length; i++) {
+    const status     = String(data[i][7] || '');
+    const targetDate = data[i][13];
+    if (status !== 'In Progress' || !targetDate) continue;
+
+    const target = new Date(targetDate);
+    if (target >= today) continue; // not yet overdue
+
+    const jrfNo    = String(data[i][0]);
+    const cacheKey = 'overdue_reminded_' + jrfNo;
+    if (cache.get(cacheKey)) continue; // already reminded recently
+
+    const name       = String(data[i][2] || '');
+    const problem    = String(data[i][5] || '');
+    const assignedTo = String(data[i][8] || '');
+    const daysOver   = Math.floor((today - target) / 86400000);
+
+    if (itEmail) {
+      try {
+        MailApp.sendEmail(
+          itEmail,
+          'Overdue IT Ticket — ' + jrfNo,
+          'The following IT Job Request is overdue:\n\n' +
+          'JRF #:        ' + jrfNo      + '\n' +
+          'Requester:    ' + name        + '\n' +
+          'Problem:      ' + problem     + '\n' +
+          'Target Date:  ' + Utilities.formatDate(target, Session.getScriptTimeZone(), 'MM/dd/yyyy') + '\n' +
+          'Days Overdue: ' + daysOver    + '\n' +
+          'Assigned To:  ' + (assignedTo || 'Unassigned') + '\n\n' +
+          'Please update the ticket status on the IT Dashboard.'
+        );
+        cache.put(cacheKey, '1', 72000); // 20-hour TTL
+        count++;
+      } catch (emailErr) {
+        Logger.log('sendOverdueReminders email error: ' + emailErr);
+      }
+    }
+  }
+  Logger.log('sendOverdueReminders: ' + count + ' reminder(s) sent');
+}
+
+/**
+ * Deletes Approvals sheet rows older than 30 days.
+ * Set up as a weekly time-driven trigger (Monday, 2:00–3:00 AM).
+ */
+function cleanupApprovalTokens() {
+  const ss     = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const aSheet = ss.getSheetByName(APPROVALS_SHEET_NAME);
+  if (!aSheet) return;
+
+  const data    = aSheet.getDataRange().getValues();
+  const cutoff  = Date.now() - 30 * 24 * 60 * 60 * 1000; // 30 days ago
+  let   deleted = 0;
+
+  // Iterate from bottom to preserve row indices when deleting
+  for (let i = data.length - 1; i >= 1; i--) {
+    const created = data[i][4]; // col E
+    if (!created) continue;
+    if (new Date(created).getTime() < cutoff) {
+      aSheet.deleteRow(i + 1);
+      deleted++;
+    }
+  }
+  Logger.log('cleanupApprovalTokens: deleted ' + deleted + ' old token(s)');
+}
+
+/**
+ * Moves Completed/Rejected tickets older than 90 days to an Archive sheet.
+ * Creates Archive sheet if it doesn't exist.
+ * Set up as a monthly time-driven trigger (1st of month, 3:00–4:00 AM).
+ */
+function archiveOldTickets() {
+  const ss     = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const tSheet = ss.getSheetByName(ITJRF_SHEET_NAME);
+  if (!tSheet) return;
+
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 90);
+
+  // Get or create Archive sheet
+  let aSheet = ss.getSheetByName('Archive');
+  if (!aSheet) {
+    aSheet = ss.insertSheet('Archive');
+    // Copy header row
+    const headers = tSheet.getRange(1, 1, 1, tSheet.getLastColumn()).getValues();
+    aSheet.appendRow(headers[0]);
+    aSheet.setFrozenRows(1);
+  }
+
+  const data     = tSheet.getDataRange().getValues();
+  let   archived = 0;
+
+  // Iterate from bottom so row indices stay valid
+  for (let i = data.length - 1; i >= 1; i--) {
+    const status = String(data[i][7] || '');
+    const date   = data[i][1];
+    if (!date) continue;
+    if (status !== 'Completed' && status !== 'Rejected') continue;
+    if (new Date(date).getTime() >= cutoff.getTime()) continue;
+
+    aSheet.appendRow(data[i]);
+    tSheet.deleteRow(i + 1);
+    archived++;
+  }
+  Logger.log('archiveOldTickets: archived ' + archived + ' ticket(s)');
+}
 
 /**
  * DEBUG: Writes labelled test values into every mapped cell of the Template sheet.
