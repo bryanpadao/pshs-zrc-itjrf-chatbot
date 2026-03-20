@@ -294,17 +294,16 @@ const MAX_MESSAGE_LENGTH       = 1000;  // max characters accepted per user mess
 
 ### Quick-start buttons (Index.html landing)
 
-After identity is resolved, the user sees **5** option buttons. The input textarea is enabled immediately after identity resolves (before any button is clicked), so users can also type directly.
+After identity is resolved, the user sees **4** option buttons in a 2×2 grid. The input textarea is enabled immediately after identity resolves (before any button is clicked), so users can also type directly.
 
 | Button | Key | Behavior |
 |--------|-----|----------|
 | 💻 IT Issue / Repair | `it_issue` | Chat flow — Gemini troubleshoots, then auto-files via `processChat()` |
-| ❓ Ask a Question | `question` | Chat flow — same as IT Issue / Repair |
 | 🎨 Publication / Design | `publication` | Opens inline form panel in Index.html — submits via `submitFormTicket()` directly |
-| 📷 CCTV Viewing Request | `cctv` | Opens inline form panel with Data Privacy Act warning + required letter checkbox — submits via `submitFormTicket()` |
+| 📷 CCTV Request | `cctv` | Opens inline form panel with Data Privacy Act warning + required letter checkbox — submits via `submitFormTicket()` |
 | 🔧 Technical Assistance | `technical` | Opens inline form panel — submits via `submitFormTicket()` |
 
-`handleQuickStart(type, session)` — now only a safety fallback. For `publication`, `cctv`, and `technical`, returns an error message (these types now use the form panel). For `it_issue` and `question`, returns a generic prompt (not called in normal operation — those types enable input directly in Index.html).
+`handleQuickStart(type, session)` — now only a safety fallback. For `publication`, `cctv`, and `technical`, returns an error message (these types now use the form panel). For `it_issue` and `question`, returns a generic prompt (not called in normal operation — those types enable input directly in Index.html). Note: the `question` key is still handled in `handleQuickReply()` client-side for backward compatibility but there is no "Ask a Question" button in the UI.
 
 **Cancel in form panel:** The "← Back to chat" link calls `hideFormPanel()` — restores the chat message area without submitting. No session state to clean up since form types never enter the session state machine.
 
@@ -314,8 +313,8 @@ Client sends only `sessionId` (opaque UUID). Session object lives in `CacheServi
 
 | `session.state` | Handler | Description |
 |-----------------|---------|-------------|
-| _(none)_ | `handleChat()` | RAG + Gemini; detects `%%FILE_TICKET:<desc>%%` signal; auto-files immediately when identity is verified; increments `session.strikeCount` on `isGibberish()` or insufficient context (`hasEnoughContext()` = false); 3 strikes ends conversation |
-| `'collecting'` | `handleFormStep()` | Collects description (only step in FORM_STEPS/QUICK_START_FORM_STEPS); increments `session.strikeCount` on `isGibberish()` |
+| _(none)_ | `handleChat()` | RAG + Gemini; detects `%%FILE_TICKET:<desc>%%` signal; auto-files immediately when identity is verified; increments `session.nonsenseCount` on `isGibberish()` or insufficient context (`hasEnoughContext()` = false); 3 strikes ends conversation |
+| `'collecting'` | `handleFormStep()` | Collects description (only step in FORM_STEPS/QUICK_START_FORM_STEPS); increments `session.gibberishCount` on `isGibberish()` — but only for non-description steps (name/position/department/supervisor); description step has no gibberish check |
 | `'cctv_letter_check'` | `handleCctvLetterCheck()` | CCTV gate: confirms Director-approved letter before allowing description collection |
 | `'confirm_name'` | `handleConfirmName()` | Asks user to confirm employee lookup result before auto-filling (fallback only — not triggered in normal flow since identity comes from Google account) |
 | `'confirm'` | `handleConfirm()` | Waits for yes/no; on yes → `saveTicket()` + locks chat UI (fallback only — used when identity was NOT pre-filled) |
@@ -343,7 +342,7 @@ When Gemini returns the `%%FILE_TICKET:<desc>%%` signal:
 
 **If `session.identityVerified` is true (normal case):**
 1. Calls `buildDescriptionFromHistory(session)` to extract a comprehensive description from the full conversation
-2. Calls `hasEnoughContext(rawDesc)` — if not enough IT context, increments `session.strikeCount` and asks for clarification (max 3 strikes, then locks chat)
+2. Calls `hasEnoughContext(rawDesc)` — if not enough IT context, increments `session.nonsenseCount` and asks for clarification (max 3 strikes, then locks chat)
 3. Calls `paraphraseDescription(rawDesc)` to produce a formal government-style description
 4. Calls `saveTicket()` immediately — no confirmation step shown
 5. Returns the visible Gemini reply + a ticket confirmation summary as separate bubbles; locks the chat on success
@@ -355,15 +354,22 @@ When Gemini returns the `%%FILE_TICKET:<desc>%%` signal:
 - CCTV/media: `cctv`, `footage`, `camera`
 - Publication/design: `poster`, `tarpaulin`, `tarps`, `pubmat`, `design`, `layout`, `social media`, `facebook`, `post`, `certificate`, `announcement`, `publication`
 
-**`session.strikeCount`** — unified counter incremented by both `isGibberish()` and `hasEnoughContext()` returning false (see Gibberish and nonsense detection section below). 3 combined strikes from any mix ends the conversation with a joke + `submitted: true`.
+**Nonsense counters** — `handleChat()` uses `session.nonsenseCount` (incremented by both `isGibberish()` and `hasEnoughContext()` returning false). `handleFormStep()` uses `session.gibberishCount` (only for non-description steps). Each resets to 0 on valid input. 3 strikes on either counter ends the conversation with a joke + `submitted: true`.
 
 **Quick-start description prefix:** In quick-start flows, `session.quickStartLabel` is prepended to the raw description before paraphrasing (e.g. `"Technical Assistance: my laptop won't connect to the projector"`). This ensures the ticket clearly identifies the request type.
 
-### Gibberish and nonsense detection — unified strike counter
+### Gibberish and nonsense detection — two separate counters
 
-A single counter `session.strikeCount` is used across the entire chat session. It increments from any of the following:
-- `isGibberish(text)` returns true — detects keyboard mashing on any input
-- `hasEnoughContext(message)` returns false — message lacks sufficient IT context to file a meaningful ticket
+Two separate counters are used; they do NOT share state:
+
+- **`session.nonsenseCount`** — used in `handleChat()`. Increments when:
+  - `isGibberish(message)` returns true (keyboard mashing detected in a chat message)
+  - `hasEnoughContext(rawDesc)` returns false (description lacks sufficient IT context)
+  - Resets to 0 on any valid, non-flagged message.
+
+- **`session.gibberishCount`** — used in `handleFormStep()`. Increments when:
+  - `isGibberish(message)` returns true **only on non-description steps** (name/position/department/supervisor). The description step (the only current step in FORM_STEPS) does NOT trigger gibberish detection.
+  - Resets to 0 on any valid input.
 
 `isGibberish(text)` flags text if any of these conditions hold:
 1. The whole string (with up to 3 trailing chars) is one repeating 2–4 char n-gram (e.g. `asdasdasd`, `vcvcvcvc`)
@@ -372,19 +378,10 @@ A single counter `session.strikeCount` is used across the entire chat session. I
 4. Consecutive consonant run of 6+ letters (e.g. `sdfjklqw`)
 Strings shorter than 4 chars are never flagged.
 
-**Strike behavior:**
+**Strike behavior (same for both counters):**
 - **Strike 1** — warning + re-ask / continue conversation
 - **Strike 2** — stronger warning: "one more and I'll have to give up on us 😅"
 - **Strike 3** — random funny joke + `{ submitted: true }` — locks chat, shows "Start a New Conversation". No ticket is filed.
-
-Counter resets to 0 on any valid, non-flagged input.
-
-**Where it is applied:**
-- `handleChat()` — increments on `hasEnoughContext()` returning false
-- `handleFormStep()` — increments on `isGibberish()` returning true on the description field (the only remaining form step)
-- Both functions read and write the same `session.strikeCount` field
-
-**Removed:** `session.gibberishCount` and `session.nonsenseCount` are no longer used — replaced by `session.strikeCount`.
 
 ### Supervisor auto-fill — `resolveAutoSupervisor(position, department, employeeName)`
 
@@ -406,7 +403,7 @@ Called after name confirmation (yes path) and after manual department entry. Alw
 - **`getDashboardUser()`** — returns `{ email, authorized }` for dashboard auth check; used by Dashboard on load
 - **`getTicketUpdates(email)`** — returns up to 5 recent ticket status updates for requester email (col R), excluding Pending Supervisor Approval status
 - **`getMyTickets(email)`** — returns all tickets for a requester email (col R), all statuses, sorted by JRF # descending
-- **`hasEnoughContext(message)`** — lightweight Gemini call; returns bool — true if message has enough detail to file a ticket; false increments `session.strikeCount`; fails open (returns true) on API error
+- **`hasEnoughContext(message)`** — lightweight Gemini call; returns bool — true if message has enough detail to file a ticket; false increments `session.nonsenseCount` (in chat flow); fails open (returns true) on API error
 - **`buildDescriptionFromHistory(session)`** — Gemini call to extract a comprehensive description from the full chat history; falls back to `session.formData.description` on error
 - **`paraphraseDescription(rawText)`** — Gemini call to formally paraphrase description in Philippine government document style; returns rawText unchanged on error
 - **`handleCctvLetterCheck(message, session)`** — handles `cctv_letter_check` state; yes = proceed to description; no = explain requirement + end conversation
@@ -415,7 +412,7 @@ Called after name confirmation (yes path) and after manual department entry. Alw
 - **`submitFormTicket(params)`** — handles form-panel submissions for `publication`/`cctv`/`technical`; validates identity + rate limits + CCTV letter flag + context; paraphrases description; calls `saveTicket()`; returns `{ jrfNo, rawDesc, name, departmentFull, supervisor }` on success or `{ error, message }` on failure. Does NOT use `session.strikeCount` — context errors are returned cleanly to Index.html.
 - **`saveTicket(data)`** — calls `checkGlobalRateLimit()` + per-user rate limit (3/day); appends 18-column row (A–R); sends supervisor approval email
 - **`appendHistory(history, userText, modelText)`** — rolling 20-message history (max 10 turns)
-- **`isGibberish(text)`** — detects keyboard mashing on any input; increments `session.strikeCount`; used by `handleFormStep()` on the description field
+- **`isGibberish(text)`** — detects keyboard mashing; used by `handleChat()` (increments `session.nonsenseCount`) and by `handleFormStep()` on non-description steps (increments `session.gibberishCount`)
 - **`resolveAutoSupervisor(position, department, employeeName)`** — resolves supervisor from Departments sheet; falls back to Campus Director; detects division heads via self-reference check
 - **`sendOverdueReminders()`** — emails IT staff about overdue In Progress tickets; set as daily time-driven trigger (8:00–9:00 AM)
 - **`cleanupApprovalTokens()`** — deletes Approvals rows older than 30 days; set as weekly trigger (Monday 2:00–3:00 AM)
@@ -542,7 +539,7 @@ Messaging-app style (iMessage/WhatsApp inspired). Primary color: `#1a3c6e` (PSHS
 - Shown when user clicks a form-type quick-start button; hides `.chat-messages` and `.chat-input`, shows `#form-panel`
 - **Identity strip** (top): read-only compact summary — 🔒 Name · Position · departmentFull · Supervisor (font-size 12px, muted)
 - **CCTV only**: amber warning card (⚠️ Data Privacy Act requirement) + required checkbox. Description textarea and submit button are disabled until checkbox is checked.
-- **Description textarea**: required, minimum 15 words enforced — live word count shown below (`n words ✓` green / `n words — please add more detail` red). Submit button disabled until word count ≥ 15.
+- **Description textarea**: required, minimum 8 words enforced — live word count shown below (`n words ✓` green / `n words — please add more detail` red). Submit button disabled until word count ≥ 8.
 - **Submit button** (`Submit Request →`): full-width, `#1a3c6e`, disabled until valid. Shows `⏳ Submitting…` while the server call is in progress.
 - **On submit**: calls `submitFormTicket()` → shows success bubble in chat on success, then `lockChat()`
 - **On error**: re-enables button, shows inline error inside the form panel
@@ -560,12 +557,12 @@ Messaging-app style (iMessage/WhatsApp inspired). Primary color: `#1a3c6e` (PSHS
   - `Completed` → "✅ Resolved on [dateCompleted]"
   - `Rejected` → "❌ Request was not approved"
 
-### My Tickets button
-- Shown below quick-start buttons (for identified users only)
+### My Tickets overlay panel
+- Accessible via the "**+ N more**" toggle at the bottom of the ticket status strip (shown only when there are more than 2 ticket updates)
 - Calls `getMyTickets(email)` on click
-- Replaces message list with a scrollable ticket panel: JRF # | Date | Problem | Status
+- Renders a full-screen overlay panel listing all the user's tickets: JRF # | Date | Problem | Status
 - Tapping a row shows full problem + status detail
-- "Back to Chat" button restores the message list
+- "← Back" button in the panel header closes the overlay
 
 ### Typing indicator
 - Appears as a temporary bot bubble while waiting for `google.script.run` callback
@@ -707,13 +704,13 @@ ALLOWED_DOMAIN   → (optional) e.g. zrc.pshs.edu.ph — restricts chatbot to th
 | Identity auto-filled silently from Google account | By design — `getUserIdentity()` pre-fills name/position/dept/supervisor before any form step. No user confirmation needed since identity is verified via Google Sign-In. |
 | Cancel at confirmation resets to neutral instead of restarting quick-start | Fixed: `session.quickStartType` is persisted; `handleConfirm()` restarts `handleQuickStart(qsType, {})` on "no" for quick-start flows |
 | Description missing quick-start context label | Fixed: `session.quickStartLabel` is prepended to description (e.g. `"Technical Assistance: ..."`) so IT staff see the request type clearly |
-| Users entering gibberish or low-context messages | Unified `session.strikeCount` increments on `isGibberish()` or `hasEnoughContext()` returning false. 3 strikes from any combination ends the conversation with a joke + `submitted: true` |
-| "Ask a Question" button present | Still in the UI — routes through the same Gemini chat flow as IT Issue / Repair |
-| `getTicketUpdates()` shows update every session if status unchanged | `localStorage` cache `pshs_ticket_cache_[email]` stores last-seen statuses; only shows bubble when status changed since last visit |
-| My Tickets panel data not refreshed after new submission | `getMyTickets()` is called on button click — if a ticket was just submitted, user must tap My Tickets again to see it appear |
+| Users entering gibberish or low-context messages | `handleChat()` uses `session.nonsenseCount` (isGibberish + hasEnoughContext); `handleFormStep()` uses `session.gibberishCount` (isGibberish on non-description steps only). 3 strikes on either ends conversation with joke + `submitted: true` |
+| "Ask a Question" button removed from grid | Removed from the 2×2 quick-start grid. The `question` key is still handled in `handleQuickReply()` client-side JS but has no corresponding button in the UI |
+| `getTicketUpdates()` shows update every session if status unchanged | `localStorage` cache `pshs_ticket_cache_[email]` stores last-seen statuses; only shows strip when status changed since last visit |
+| My Tickets panel accessible only via strip toggle | No dedicated "My Tickets" button in the UI — only reachable via the "+ N more" link in the ticket status strip. Success message still references "📋 My Tickets" but that is just informational text |
 | Per-user rate limit resets at midnight PHT, not 24h from first submission | TTL calculated as seconds remaining until midnight PHT (UTC+8) — intentional, matches a working day reset |
 | CCTV letter checkbox can be bypassed client-side | `submitFormTicket()` also validates `cctvLetterConfirmed` server-side — belt-and-suspenders |
-| `hasEnoughContext()` returns false on form submission | `submitFormTicket()` returns `{ error: 'insufficient_context' }` to Index.html, shown inline in the form — does NOT increment `session.strikeCount` (form submissions are not chat) |
+| `hasEnoughContext()` returns false on form submission | `submitFormTicket()` returns `{ error: 'insufficient_context' }` to Index.html, shown inline in the form — does NOT increment `session.nonsenseCount` or `session.gibberishCount` (form submissions are not chat) |
 
 ---
 
