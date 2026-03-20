@@ -5,14 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <!-- Prevent iOS from auto-linking phone numbers, addresses, dates in chat bubbles -->
   <meta name="format-detection" content="telephone=no, date=no, address=no, email=no, url=no">
-  <title>PSHS ZRC IT Support Chatbot</title>
+  <title>PSHS-ZRC IT Support</title>
   <link rel="icon" type="image/png" href="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w64">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
-    html, body {
-      height: 100%;
-    }
+    html, body { height: 100%; }
 
     body {
       font-family: -apple-system, 'Segoe UI', Arial, sans-serif;
@@ -23,7 +21,7 @@
       min-height: 100%;
     }
 
-    /* Full-viewport background */
+    /* Full-viewport background — only visible on desktop around the card */
     body::before {
       content: '';
       position: fixed;
@@ -32,14 +30,13 @@
       background: url('https://drive.google.com/thumbnail?id=1kz4OlKY9jpt_qWtP8aC1BrjLXBhiWcmb&sz=w1920') center/cover no-repeat;
     }
 
-    /* ── Chat container — mobile first ─────────────────────────────────────── */
+    /* ── Chat container — mobile first ──────────────────────────────────────── */
 
-    /* On mobile: use fixed positioning to guarantee true full-screen coverage
-       regardless of any iframe or parent container constraints from Apps Script */
+    /* On mobile: use fixed positioning for true full-screen coverage */
     .chat-container {
       position: fixed;
       inset: 0;
-      background: #f2f2f7;   /* iOS system background */
+      background: #f0f4fa;
       display: flex;
       flex-direction: column;
       overflow: hidden;
@@ -47,10 +44,7 @@
 
     /* On wide screens: float as a centered card */
     @media (min-width: 900px) {
-      body {
-        align-items: center;
-        padding: 24px 0;
-      }
+      body { align-items: center; padding: 24px 0; }
       .chat-container {
         position: relative;
         inset: auto;
@@ -61,32 +55,29 @@
       }
     }
 
-    /* ── Header — messaging app contact style ────────────────────────────── */
+    /* ── Header — navy bar with ZRC text avatar ────────────────────────────── */
 
     .chat-header {
-      background: #fff;
-      border-bottom: 1px solid #d1d1d6;
-      padding: 10px 16px 12px;
+      background: #1a3c6e;
+      padding: 12px 16px;
       display: flex;
-      flex-direction: column;
       align-items: center;
-      gap: 4px;
+      gap: 12px;
       flex-shrink: 0;
     }
 
-    /* Circular avatar */
+    /* Logo avatar circle */
     .header-avatar {
-      width: 50px;
-      height: 50px;
+      width: 44px;
+      height: 44px;
       border-radius: 50%;
-      overflow: hidden;
       background: #fff;
-      flex-shrink: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      border: 2px solid #f5b800;               /* gold ring */
-      box-shadow: 0 0 0 2px #1a3c6e;           /* outer blue ring */
+      flex-shrink: 0;
+      overflow: hidden;
+      border: 2px solid #c9a84c;
     }
 
     .header-avatar img {
@@ -95,29 +86,287 @@
       object-fit: cover;
     }
 
+    .header-text { flex: 1; }
+
     .header-name {
       font-size: 16px;
-      font-weight: 600;
-      color: #1a1a1a;
-      letter-spacing: -0.2px;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1.2;
     }
 
     .header-status {
-      font-size: 11px;
-      color: #8e8e93;
+      font-size: 12px;
+      color: rgba(255,255,255,0.72);
+      margin-top: 1px;
     }
 
-    /* ── Messages area ───────────────────────────────────────────────────── */
+    /* Green online indicator */
+    .header-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #1D9E75;
+      flex-shrink: 0;
+      box-shadow: 0 0 0 2px #1a3c6e;
+    }
+
+    /* ── Identity bar — shown after identity resolves ────────────────────────── */
+
+    #identity-bar {
+      display: none;   /* becomes flex after identity resolves */
+      align-items: center;
+      gap: 10px;
+      background: #fff;
+      border-bottom: 1px solid #d4dce8;
+      padding: 8px 14px;
+      flex-shrink: 0;
+    }
+
+    /* Initials avatar */
+    .id-bar-avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: #1a3c6e;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .id-bar-info { flex: 1; min-width: 0; }
+
+    .id-bar-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: #1a1a1a;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .id-bar-sub {
+      font-size: 11px;
+      color: #6b7a96;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* "✓ Verified" badge */
+    .id-bar-badge {
+      font-size: 11px;
+      font-weight: 600;
+      color: #1D9E75;
+      background: #e8f8f3;
+      border: 1px solid #b3e8d5;
+      border-radius: 10px;
+      padding: 2px 8px;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+
+    /* ── Loading state — shown by default while identity resolves ─────────────── */
+
+    #loading-state {
+      display: flex;
+      flex: 1;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      background: #f0f4fa;
+    }
+
+    .spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid #d4dce8;
+      border-top-color: #1a3c6e;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-text { font-size: 13px; color: #6b7a96; }
+
+    /* ── Main content — hidden until identity resolves ───────────────────────── */
+
+    #main-content {
+      display: none;   /* becomes flex after identity resolves */
+      flex: 1;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Ticket status strip — shown only if there are new updates ───────────── */
+
+    #ticket-strip {
+      display: none;   /* shown via JS when updates exist */
+      background: #fff;
+      border-bottom: 1px solid #d4dce8;
+      padding: 8px 14px;
+      flex-shrink: 0;
+    }
+
+    .ticket-strip-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #6b7a96;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+
+    .ticket-strip-items {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .ticket-strip-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #333;
+    }
+
+    .ts-jrf { color: #6b7a96; flex-shrink: 0; }
+
+    .ts-problem {
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Status pills */
+    .ts-pill {
+      flex-shrink: 0;
+      font-size: 10px;
+      font-weight: 600;
+      border-radius: 8px;
+      padding: 2px 7px;
+      white-space: nowrap;
+    }
+
+    .ts-pill.status-pending  { background: #fff3cd; color: #856404; }
+    .ts-pill.status-progress { background: #d1ecf1; color: #0c5460; }
+    .ts-pill.status-done     { background: #d4edda; color: #155724; }
+    .ts-pill.status-rejected { background: #f8d7da; color: #721c24; }
+
+    /* "View all" toggle link at bottom of strip */
+    .ticket-strip-toggle {
+      font-size: 11px;
+      color: #1a3c6e;
+      cursor: pointer;
+      margin-top: 4px;
+      display: inline-block;
+      background: none;
+      border: none;
+      padding: 0;
+      font-family: inherit;
+      text-decoration: underline;
+    }
+
+    /* ── Quick-start grid — 2×2 buttons ──────────────────────────────────────── */
+
+    .qs-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 12px 12px 0;
+      flex-shrink: 0;
+    }
+
+    .qs-btn {
+      background: #fff;
+      border: 1.5px solid #d4dce8;
+      border-radius: 12px;
+      padding: 12px 10px;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.15s, background 0.15s;
+      touch-action: manipulation;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .qs-btn:hover  { border-color: #1a3c6e; background: #f7f9ff; }
+    .qs-btn.active { border-color: #1a3c6e; background: #eef2fa; }
+
+    .qs-icon  { font-size: 20px; line-height: 1; }
+    .qs-label { font-size: 13px; font-weight: 600; color: #1a1a1a; }
+    .qs-sub   { font-size: 11px; color: #6b7a96; }
+
+    /* ── Direct-submit shortcut — shown during IT Issue chat flow ───────────── */
+
+    #direct-submit-bar {
+      display: none;   /* shown via JS when IT Issue flow is active */
+      padding: 6px 12px 0;
+      flex-shrink: 0;
+      text-align: center;
+    }
+
+    #direct-submit-bar button {
+      background: #fff8e1;
+      border: 1.5px solid #c9a84c;
+      border-radius: 16px;
+      padding: 6px 16px;
+      font-size: 12px;
+      color: #7a5c00;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.15s;
+      touch-action: manipulation;
+    }
+
+    #direct-submit-bar button:hover { background: #fff0c0; }
+
+    /* ── Chat area separator ──────────────────────────────────────────────────── */
+
+    .chat-area-sep {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px 0;
+      flex-shrink: 0;
+    }
+
+    .chat-area-sep span {
+      font-size: 11px;
+      color: #6b7a96;
+      white-space: nowrap;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .chat-area-sep::before,
+    .chat-area-sep::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: #d4dce8;
+    }
+
+    /* ── Messages area ───────────────────────────────────────────────────────── */
 
     .chat-messages {
       flex: 1;
-      padding: 12px 12px 8px;
+      padding: 10px 12px 8px;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
       gap: 10px;
       -webkit-overflow-scrolling: touch;
-      background: #f2f2f7;
     }
 
     /* Row wrapper — used for bot messages to place avatar + bubble side by side */
@@ -127,42 +376,40 @@
       gap: 6px;
     }
 
-    .msg-row.bot-row { align-self: flex-start; max-width: 84%; }
+    .msg-row.bot-row { align-self: flex-start; max-width: 90%; }
 
-    /* Small circular bot avatar beside each bot bubble */
+    /* Small text avatar beside bot bubbles ("IT") */
     .bot-avatar {
-      width: 26px;
-      height: 26px;
+      width: 24px;
+      height: 24px;
       border-radius: 50%;
-      overflow: hidden;
+      background: #1a3c6e;
+      color: #fff;
+      font-size: 8px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       flex-shrink: 0;
-      background: #fff;
-      border: 1.5px solid #f5b800;             /* gold ring */
-      box-shadow: 0 0 0 1.5px #1a3c6e;         /* outer blue ring */
-    }
-
-    .bot-avatar img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
     }
 
     /* Bubble base */
     .message {
       padding: 10px 14px;
       border-radius: 18px;
-      font-size: 15px;
+      font-size: 14px;
       line-height: 1.5;
       white-space: pre-wrap;
-      overflow-wrap: break-word; /* only break truly unbreakable long strings */
-      word-break: normal;        /* do NOT split normal words mid-character */
+      overflow-wrap: break-word;
+      word-break: normal;
     }
 
-    /* Bot bubble — white with bottom-left tail */
+    /* Bot bubble — white with subtle border */
     .message.bot {
       background: #fff;
       color: #1a1a1a !important;
       border-bottom-left-radius: 4px;
+      border: 1px solid #e8ecf4;
     }
 
     /* Prevent browser auto-link detection from coloring bot text blue */
@@ -173,7 +420,7 @@
       pointer-events: none;
     }
 
-    /* User bubble — PSHS blue with bottom-right tail */
+    /* User bubble — PSHS navy */
     .message.user {
       background: #1a3c6e;
       color: #fff;
@@ -182,114 +429,31 @@
       max-width: 84%;
     }
 
-    /* Prevent browser auto-link detection from coloring user text */
     .message.user a {
       color: #fff;
       text-decoration: none;
       pointer-events: none;
     }
 
-    /* ── Input bar — iMessage style ──────────────────────────────────────── */
+    /* ── KB card — gold-accented card for numbered troubleshooting steps ─────── */
 
-    .chat-input {
-      display: flex;
-      align-items: flex-end;
-      padding: 10px 12px;
-      padding-bottom: max(10px, env(safe-area-inset-bottom));
+    .kb-card {
       background: #fff;
-      border-top: 1px solid #d1d1d6;
-      gap: 8px;
-      flex-shrink: 0;
-    }
-
-    .chat-input textarea {
-      flex: 1;
-      resize: none;
-      border: 1px solid #d1d1d6;
-      border-radius: 20px;
-      padding: 10px 16px;
-      font-size: 16px;    /* 16px prevents iOS auto-zoom on focus */
-      font-family: inherit;
-      outline: none;
-      min-height: 40px;
-      max-height: 120px;
-      overflow-y: hidden;  /* hidden by default; JS enables scroll only when content exceeds max-height */
-      line-height: 1.4;
-      background: #f2f2f7;
+      border: 1px solid #d4dce8;
+      border-left: 3px solid #c9a84c;
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 13px;
       color: #1a1a1a;
-      transition: border-color 0.15s;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      overflow-wrap: break-word;
+      max-width: 90%;
+      align-self: flex-start;
     }
 
-    .chat-input textarea:focus {
-      border-color: #1a3c6e;
-      background: #fff;
-    }
+    /* ── Typing indicator ────────────────────────────────────────────────────── */
 
-    /* Send button — circle, hides until textarea has content */
-    .chat-input button {
-      background: #1a3c6e;
-      color: #fff;
-      border: none;
-      border-radius: 50%;
-      width: 36px;
-      height: 36px;
-      cursor: pointer;
-      font-size: 16px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      transition: background 0.15s, transform 0.1s;
-      touch-action: manipulation;
-      margin-bottom: 2px; /* align with textarea baseline */
-    }
-
-    .chat-input button:hover  { background: #255090; }
-    .chat-input button:active { transform: scale(0.92); background: #0f2550; }
-
-    /* Locked state */
-    .chat-input.locked textarea {
-      background: #f5f5f5;
-      color: #aaa;
-      cursor: not-allowed;
-    }
-
-    .chat-input.locked button {
-      background: #c7c7cc;
-      cursor: not-allowed;
-      pointer-events: none;
-    }
-
-    /* ── New chat bar ────────────────────────────────────────────────────── */
-
-    .new-chat-bar {
-      padding: 12px 16px;
-      padding-bottom: max(12px, env(safe-area-inset-bottom));
-      border-top: 1px solid #d1d1d6;
-      background: #fff;
-      text-align: center;
-      display: none;
-      flex-shrink: 0;
-    }
-
-    .new-chat-bar button {
-      background: #1a3c6e;
-      color: #fff;
-      border: none;
-      border-radius: 20px;
-      padding: 11px 28px;
-      font-size: 14px;
-      font-family: inherit;
-      cursor: pointer;
-      transition: background 0.2s;
-      touch-action: manipulation;
-    }
-
-    .new-chat-bar button:hover { background: #255090; }
-
-    /* ── Typing indicator ────────────────────────────────────────────────── */
-
-    /* Wrap typing in a row so it aligns with bot messages */
     .typing-row {
       display: flex;
       align-items: flex-end;
@@ -304,6 +468,7 @@
       background: #fff;
       border-radius: 18px;
       border-bottom-left-radius: 4px;
+      border: 1px solid #e8ecf4;
       width: fit-content;
     }
 
@@ -322,62 +487,12 @@
       40%           { transform: translateY(-5px); }
     }
 
-    /* ── Quick-reply option buttons ──────────────────────────────────────── */
-
-    .quick-replies {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      padding: 4px 0 4px 32px; /* indent to align under bot bubbles */
-      align-self: flex-start;
-      width: 100%;
-    }
-
-    .quick-reply-btn {
-      background: #fff;
-      border: 1.5px solid #1a3c6e;
-      color: #1a3c6e;
-      border-radius: 20px;
-      padding: 10px 18px;
-      cursor: pointer;
-      font-size: 14px;
-      font-family: inherit;
-      text-align: left;
-      transition: background 0.15s, color 0.15s;
-      touch-action: manipulation;
-      width: fit-content;
-      max-width: 100%;
-    }
-
-    .quick-reply-btn:hover  { background: #1a3c6e; color: #fff; }
-    .quick-reply-btn:active { background: #0f2550; color: #fff; }
-
-    /* ── My Tickets button ───────────────────────────────────────────────── */
-
-    .my-tickets-btn {
-      display: block;
-      width: calc(100% - 32px);
-      margin: 4px 16px 0;
-      padding: 10px;
-      background: transparent;
-      border: 1.5px solid #1a3c6e;
-      border-radius: 20px;
-      color: #1a3c6e;
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      text-align: center;
-      font-family: inherit;
-      transition: background 0.15s;
-    }
-    .my-tickets-btn:hover { background: #f0f4fa; }
-
-    /* ── My Tickets panel ────────────────────────────────────────────────── */
+    /* ── My Tickets overlay panel ────────────────────────────────────────────── */
 
     .my-tickets-panel {
       position: absolute;
       inset: 0;
-      background: #f2f2f7;
+      background: #f0f4fa;
       z-index: 10;
       display: flex;
       flex-direction: column;
@@ -418,9 +533,9 @@
     }
 
     .ticket-item:hover { background: #f7f8ff; }
-    .ticket-item .ti-jrf { font-size: 11px; color: #888; }
+    .ticket-item .ti-jrf     { font-size: 11px; color: #888; }
     .ticket-item .ti-problem { font-size: 14px; font-weight: 500; color: #1a1a1a; margin: 2px 0 6px; }
-    .ticket-item .ti-status { font-size: 12px; color: #1a3c6e; }
+    .ticket-item .ti-status  { font-size: 12px; color: #1a3c6e; }
 
     .ticket-detail {
       background: #fff;
@@ -443,21 +558,410 @@
       padding: 0;
       font-family: inherit;
     }
+
+    /* ── Input bar — iMessage style ──────────────────────────────────────────── */
+
+    .chat-input {
+      display: flex;
+      align-items: flex-end;
+      padding: 10px 12px;
+      padding-bottom: max(10px, env(safe-area-inset-bottom));
+      background: #fff;
+      border-top: 1px solid #d4dce8;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .chat-input textarea {
+      flex: 1;
+      resize: none;
+      border: 1.5px solid #d4dce8;
+      border-radius: 20px;
+      padding: 10px 16px;
+      font-size: 16px;    /* 16px prevents iOS auto-zoom on focus */
+      font-family: inherit;
+      outline: none;
+      min-height: 40px;
+      max-height: 120px;
+      overflow-y: hidden;  /* JS enables scroll only when content exceeds max-height */
+      line-height: 1.4;
+      background: #f0f4fa;
+      color: #1a1a1a;
+      transition: border-color 0.15s;
+    }
+
+    .chat-input textarea:focus { border-color: #1a3c6e; background: #fff; }
+
+    /* Send button — circle */
+    .chat-input button {
+      background: #1a3c6e;
+      color: #fff;
+      border: none;
+      border-radius: 50%;
+      width: 36px;
+      height: 36px;
+      cursor: pointer;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: background 0.15s, transform 0.1s;
+      touch-action: manipulation;
+      margin-bottom: 2px;
+    }
+
+    .chat-input button:hover  { background: #255090; }
+    .chat-input button:active { transform: scale(0.92); background: #0f2550; }
+
+    .chat-input.locked textarea { background: #f5f5f5; color: #aaa; cursor: not-allowed; }
+    .chat-input.locked button   { background: #c7c7cc; cursor: not-allowed; pointer-events: none; }
+
+    /* ── New chat bar ─────────────────────────────────────────────────────────── */
+
+    .new-chat-bar {
+      padding: 12px 16px;
+      padding-bottom: max(12px, env(safe-area-inset-bottom));
+      border-top: 1px solid #d4dce8;
+      background: #fff;
+      text-align: center;
+      display: none;
+      flex-shrink: 0;
+    }
+
+    .new-chat-bar button {
+      background: #1a3c6e;
+      color: #fff;
+      border: none;
+      border-radius: 20px;
+      padding: 11px 28px;
+      font-size: 14px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.2s;
+      touch-action: manipulation;
+    }
+
+    .new-chat-bar button:hover { background: #255090; }
+
+    /* ── Form Panel — mini-form card ──────────────────────────────────────────── */
+
+    #form-panel {
+      display: none;   /* shown when a form quick-start button is clicked */
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px 12px;
+      flex-direction: column;
+      gap: 12px;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* White card that wraps all form fields */
+    .mini-form {
+      background: #fff;
+      border-radius: 12px;
+      border: 1px solid #d4dce8;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .mini-form-title    { font-size: 16px; font-weight: 700; color: #1a1a1a; }
+    .mini-form-subtitle { font-size: 13px; color: #6b7a96; margin-top: 3px; }
+
+    /* Read-only identity row inside the form */
+    .form-identity-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: #f0f4fa;
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+
+    .form-id-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: #1a3c6e;
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .form-id-text { flex: 1; min-width: 0; }
+
+    .form-id-name {
+      font-size: 12px;
+      font-weight: 600;
+      color: #1a1a1a;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .form-id-sub {
+      font-size: 11px;
+      color: #6b7a96;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .form-id-lock { font-size: 12px; color: #6b7a96; flex-shrink: 0; }
+
+    /* CCTV amber warning card */
+    .cctv-warning {
+      background: #fff8e1;
+      border: 1.5px solid #c9a84c;
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 13px;
+      color: #7a5c00;
+      line-height: 1.5;
+    }
+
+    .cctv-warning-title { font-weight: 600; margin-bottom: 6px; }
+
+    .cctv-checkbox-label {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin-top: 10px;
+      font-size: 13px;
+      color: #333;
+      cursor: pointer;
+    }
+
+    .cctv-checkbox-label input[type="checkbox"] {
+      margin-top: 2px;
+      flex-shrink: 0;
+      accent-color: #1a3c6e;
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+    }
+
+    /* Description textarea label */
+    .form-field-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: #6b7a96;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      margin-bottom: 6px;
+      display: block;
+    }
+
+    .form-textarea {
+      width: 100%;
+      resize: none;
+      border: 1.5px solid #d4dce8;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 15px;
+      font-family: inherit;
+      line-height: 1.5;
+      outline: none;
+      min-height: 120px;
+      background: #f9fafb;
+      color: #1a1a1a;
+      transition: border-color 0.15s;
+    }
+
+    .form-textarea:focus { border-color: #1a3c6e; background: #fff; }
+
+    /* Word count — green when sufficient, red when not */
+    .word-count              { font-size: 12px; margin-top: 4px; color: #6b7a96; }
+    .word-count.sufficient   { color: #1D9E75; }
+    .word-count.insufficient { color: #c00; }
+
+    /* Submit button */
+    .form-submit-btn {
+      width: 100%;
+      padding: 13px;
+      background: #1a3c6e;
+      color: #fff;
+      border: none;
+      border-radius: 22px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.15s;
+    }
+
+    .form-submit-btn:hover:not(:disabled) { background: #255090; }
+    .form-submit-btn:disabled { background: #c7c7cc; cursor: not-allowed; }
+    .form-submit-btn.loading  { background: #6b7a96; cursor: wait; }
+
+    /* Back / cancel link */
+    .form-back-link {
+      text-align: center;
+      font-size: 13px;
+      color: #6b7a96;
+      cursor: pointer;
+      background: none;
+      border: none;
+      font-family: inherit;
+      padding: 4px;
+      text-decoration: underline;
+    }
+
+    /* Inline error message */
+    .form-error {
+      background: #fff0f0;
+      border: 1.5px solid #c00;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: #c00;
+      display: none;
+    }
+
+    /* ── Flow-switch warning modal ────────────────────────────────────────────── */
+
+    #flow-switch-confirm {
+      display: none;   /* flex when shown */
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 30;
+      align-items: flex-end;
+      justify-content: center;
+      padding: 0 16px max(20px, env(safe-area-inset-bottom));
+    }
+
+    .flow-switch-dialog {
+      background: #fff;
+      border-radius: 14px;
+      padding: 20px 20px 16px;
+      width: 100%;
+      max-width: 420px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+    }
+
+    .flow-switch-dialog-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #1a1a1a;
+      text-align: center;
+      margin-bottom: 8px;
+    }
+
+    .flow-switch-dialog p {
+      font-size: 13px;
+      color: #6b7a96;
+      text-align: center;
+      line-height: 1.5;
+      margin-bottom: 16px;
+    }
+
+    .flow-switch-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .flow-switch-actions button {
+      flex: 1;
+      padding: 11px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      border: none;
+      touch-action: manipulation;
+    }
+
+    .fsw-cancel  { background: #f0f4fa; color: #1a3c6e; }
+    .fsw-confirm { background: #1a3c6e; color: #fff; }
   </style>
 </head>
 <body>
   <div class="chat-container">
 
-    <!-- Header styled like a messaging app contact header -->
+    <!-- Header — navy bar with PSHS ZRC logo and green status dot -->
     <div class="chat-header">
       <div class="header-avatar">
         <img src="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w200" alt="PSHS ZRC Logo">
       </div>
-      <div class="header-name">PSHS ZRC IT Support</div>
-      <div class="header-status">IT Job Request Form Chatbot</div>
+      <div class="header-text">
+        <div class="header-name">IT Unit Help Desk</div>
+        <div class="header-status">PSHS Zamboanga Peninsula Region Campus in Dipolog City</div>
+      </div>
+      <div class="header-dot"></div>
     </div>
 
-    <div class="chat-messages" id="messages"></div>
+    <!-- Identity bar — hidden until Google account resolves; shows initials + Verified badge -->
+    <div id="identity-bar">
+      <div class="id-bar-avatar" id="id-bar-avatar">?</div>
+      <div class="id-bar-info">
+        <div class="id-bar-name" id="id-bar-name">Loading…</div>
+        <div class="id-bar-sub"  id="id-bar-sub"></div>
+      </div>
+      <div class="id-bar-badge">✓ Verified</div>
+    </div>
+
+    <!-- Loading spinner — visible by default while getUserIdentity() runs -->
+    <div id="loading-state">
+      <div class="spinner"></div>
+      <div class="loading-text">Verifying your identity…</div>
+    </div>
+
+    <!-- Main content — hidden until identity resolves -->
+    <div id="main-content">
+
+      <!-- Compact ticket status strip (hidden if no new updates) -->
+      <div id="ticket-strip">
+        <div class="ticket-strip-label">Recent Updates</div>
+        <div class="ticket-strip-items" id="ticket-strip-items"></div>
+      </div>
+
+      <!-- 2×2 quick-start grid -->
+      <div class="qs-grid" id="qs-grid">
+        <button class="qs-btn" data-type="it_issue" onclick="handleQsClick(this)">
+          <span class="qs-icon">💻</span>
+          <span class="qs-label">IT Issue / Repair</span>
+          <span class="qs-sub">Troubleshoot with AI</span>
+        </button>
+        <button class="qs-btn" data-type="publication" onclick="handleQsClick(this)">
+          <span class="qs-icon">🎨</span>
+          <span class="qs-label">Publication / Design</span>
+          <span class="qs-sub">Pubmat, tarpaulin, etc.</span>
+        </button>
+        <button class="qs-btn" data-type="cctv" onclick="handleQsClick(this)">
+          <span class="qs-icon">📷</span>
+          <span class="qs-label">CCTV Request</span>
+          <span class="qs-sub">Requires Director letter</span>
+        </button>
+        <button class="qs-btn" data-type="technical" onclick="handleQsClick(this)">
+          <span class="qs-icon">🔧</span>
+          <span class="qs-label">Technical Assistance</span>
+          <span class="qs-sub">Setup, installation, etc.</span>
+        </button>
+      </div>
+
+      <!-- Visual separator between quick-start area and chat -->
+      <div class="chat-area-sep"><span>chat</span></div>
+
+      <!-- Direct-submit shortcut — shown when IT Issue flow is active -->
+      <div id="direct-submit-bar">
+        <button onclick="showFormPanel('it_issue')">📝 Skip troubleshooting — submit ticket directly</button>
+      </div>
+
+      <!-- Chat message bubbles -->
+      <div class="chat-messages" id="messages"></div>
+
+      <!-- Form panel — shown instead of messages for publication/cctv/technical flows -->
+      <div id="form-panel"></div>
+
+    </div><!-- /#main-content -->
 
     <div class="chat-input" id="chat-input">
       <textarea id="input" placeholder="Choose an option above…" rows="1" disabled></textarea>
@@ -467,20 +971,54 @@
     <div class="new-chat-bar" id="new-chat-bar">
       <button onclick="resetChat()">&#8635; Start a New Conversation</button>
     </div>
+
   </div>
 
   <script>
-    const messagesEl  = document.getElementById('messages');
-    const inputEl     = document.getElementById('input');
-    const sendBtn     = document.getElementById('sendBtn');
-    const chatInputEl = document.getElementById('chat-input');
-    const newChatBar  = document.getElementById('new-chat-bar');
+    const messagesEl   = document.getElementById('messages');
+    const inputEl      = document.getElementById('input');
+    const sendBtn      = document.getElementById('sendBtn');
+    const chatInputEl  = document.getElementById('chat-input');
+    const newChatBar   = document.getElementById('new-chat-bar');
+    const mainContent  = document.getElementById('main-content');
+    const loadingState = document.getElementById('loading-state');
+    const identityBar  = document.getElementById('identity-bar');
 
-    const BOT_AVATAR_URL = 'https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w200';
+    let sessionId       = ''; // server-side session key
+    let currentUser     = null; // identity from getUserIdentity() — set on load
+    let currentFormType = null; // 'publication' | 'cctv' | 'technical' | 'it_issue' — set when form is open
+    let currentChatKey  = null; // 'it_issue' | 'question' — tracks active chat flow to prevent duplicate intros
+    let savedChatKey    = null; // saved chat key while a form panel is open (restored on hideFormPanel)
 
-    let sessionId   = ''; // server-side session key
-    let currentUser = null; // identity from getUserIdentity() — set on load
+    // Per-type config for the inline form panel
+    const FORM_CONFIG = {
+      it_issue: {
+        icon:        '💻',
+        title:       'IT Issue / Repair',
+        subtitle:    'Describe the problem and we\'ll file a ticket for you.',
+        placeholder: 'e.g. My computer won\'t turn on. I\'ve already checked the power cable and tried a different outlet.',
+      },
+      publication: {
+        icon:        '🎨',
+        title:       'Publication / Design Request',
+        subtitle:    'Describe what you need — the IT unit handles all publication and design work for PSHS ZRC.',
+        placeholder: 'e.g. Tarpaulin design for Women\'s Month celebration, March 28, size 4×8ft, PSHS theme, deadline March 25',
+      },
+      cctv: {
+        icon:        '📷',
+        title:       'CCTV Viewing Request',
+        subtitle:    'Complete the form below.',
+        placeholder: 'e.g. Purpose of the CCTV request — incident investigation near the library entrance on March 1, 2026 between 2:00–3:00 PM',
+      },
+      technical: {
+        icon:        '🔧',
+        title:       'Technical Assistance Request',
+        subtitle:    'Describe what you need help with.',
+        placeholder: 'e.g. My laptop won\'t connect to the projector in Room 201. I\'ve already tried restarting both devices.',
+      },
+    };
 
+    /* Locks the chat input and shows the "Start a New Conversation" bar */
     function lockChat() {
       chatInputEl.classList.add('locked');
       inputEl.disabled = true;
@@ -489,27 +1027,52 @@
       newChatBar.style.display = 'block';
     }
 
-    /* Adds a message bubble. Bot messages get a small avatar beside them. */
+    /* Returns initials from a full name (first + last character) */
+    function getInitials(name) {
+      if (!name) return '?';
+      const parts = name.trim().split(/\s+/);
+      if (parts.length === 1) return parts[0][0].toUpperCase();
+      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+
+    /* Returns the CSS pill class for a given ticket status string */
+    function statusPillClass(status) {
+      if (!status) return 'status-pending';
+      if (status.includes('Completed')) return 'status-done';
+      if (status.includes('Rejected'))  return 'status-rejected';
+      if (status.includes('Progress'))  return 'status-progress';
+      return 'status-pending';
+    }
+
+    /* Adds a message bubble to the chat.
+       Bot messages starting with a numbered list (e.g. "1.") are rendered as .kb-card
+       to visually distinguish troubleshooting steps from normal chat replies. */
     function addMessage(text, type) {
       if (type === 'bot') {
-        // Row wrapper with avatar + bubble (messaging app style)
-        const row = document.createElement('div');
-        row.className = 'msg-row bot-row';
+        const isKbCard = /^\d+[\.\)]\s/.test((text || '').trimStart());
+        if (isKbCard) {
+          const card = document.createElement('div');
+          card.className = 'kb-card';
+          card.textContent = text;
+          messagesEl.appendChild(card);
+        } else {
+          const row = document.createElement('div');
+          row.className = 'msg-row bot-row';
 
-        const avatar = document.createElement('div');
-        avatar.className = 'bot-avatar';
-        avatar.innerHTML = '<img src="' + BOT_AVATAR_URL + '" alt="bot">';
+          const avatar = document.createElement('div');
+          avatar.className = 'bot-avatar';
+          avatar.textContent = 'IT';
 
-        const bubble = document.createElement('div');
-        bubble.className = 'message bot';
-        bubble.textContent = text;
+          const bubble = document.createElement('div');
+          bubble.className = 'message bot';
+          bubble.textContent = text;
 
-        row.appendChild(avatar);
-        row.appendChild(bubble);
-        messagesEl.appendChild(row);
+          row.appendChild(avatar);
+          row.appendChild(bubble);
+          messagesEl.appendChild(row);
+        }
       } else {
-        // User bubbles: no wrapper needed — appended directly so max-width: 84%
-        // calculates against the full chat width, not a shrink-to-fit row
+        // User bubbles: appended directly (no wrapper) so max-width: 84% is relative to full chat width
         const bubble = document.createElement('div');
         bubble.className = 'message user';
         bubble.textContent = text;
@@ -518,7 +1081,7 @@
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
-    /* Typing indicator also uses the bot-row layout for visual consistency */
+    /* Shows the three-dot typing indicator with a mini bot avatar */
     function showTyping() {
       const row = document.createElement('div');
       row.className = 'typing-row';
@@ -526,7 +1089,7 @@
 
       const avatar = document.createElement('div');
       avatar.className = 'bot-avatar';
-      avatar.innerHTML = '<img src="' + BOT_AVATAR_URL + '" alt="bot">';
+      avatar.textContent = 'IT';
 
       const dots = document.createElement('div');
       dots.className = 'typing';
@@ -552,7 +1115,7 @@
       inputEl.style.height = 'auto';
       showTyping();
 
-      // Pass userIdentity on every message so server can pre-fill on first use
+      // Pass userIdentity on every message so server can pre-fill session on first use
       const chatParams = { message: text, sessionId: sessionId };
       if (currentUser) chatParams.userIdentity = currentUser;
 
@@ -588,109 +1151,78 @@
       this.style.height = 'auto';
       const newH = Math.min(this.scrollHeight, 120);
       this.style.height = newH + 'px';
-      // Only show scroll when content exceeds max-height
+      // Only show scrollbar when content exceeds max-height
       this.style.overflowY = this.scrollHeight > 120 ? 'auto' : 'hidden';
     });
 
-    const GREETING = 'Hello! I\'m the PSHS ZRC IT Support Chatbot. What can I help you with today?';
+    /* showQuickReplies is a no-op — the 2×2 grid in #main-content is always visible */
+    function showQuickReplies() { /* no-op */ }
 
-    /* Renders the option buttons after the greeting bubble */
-    function showQuickReplies() {
-      const options = [
-        { label: '💻  IT Issue / Repair',      key: 'it_issue'    },
-        { label: '🎨  Publication / Design',    key: 'publication' },
-        { label: '📷  CCTV Viewing Request',    key: 'cctv'        },
-        { label: '🔧  Technical Assistance',    key: 'technical'   },
-        { label: '❓  Ask a Question',          key: 'question'    },
-      ];
-
-      const container = document.createElement('div');
-      container.className = 'quick-replies';
-      container.id = 'quick-replies';
-
-      options.forEach(function(opt) {
-        const btn = document.createElement('button');
-        btn.className = 'quick-reply-btn';
-        btn.textContent = opt.label;
-        btn.onclick = function() { handleQuickReply(opt.key, opt.label); };
-        container.appendChild(btn);
-      });
-
-      messagesEl.appendChild(container);
-
-      // My Tickets button — only for verified employees
-      if (currentUser && currentUser.name) {
-        const myTicketsBtn = document.createElement('button');
-        myTicketsBtn.className = 'my-tickets-btn';
-        myTicketsBtn.textContent = '📋 My Tickets';
-        myTicketsBtn.onclick = openMyTickets;
-        messagesEl.appendChild(myTicketsBtn);
-      }
-
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+    /* Handles click on a 2×2 grid button.
+       Checks whether this button was ALREADY active before toggling, so re-clicking
+       the same button never re-adds the intro message. */
+    function handleQsClick(btn) {
+      const alreadyActive = btn.classList.contains('active');
+      document.querySelectorAll('.qs-btn').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      const type  = btn.getAttribute('data-type');
+      const label = btn.querySelector('.qs-label').textContent;
+      handleQuickReply(type, label, alreadyActive);
     }
 
-    /* Called when user taps one of the option buttons */
-    function handleQuickReply(key, label) {
-      // Remove the buttons and My Tickets button
-      const container = document.getElementById('quick-replies');
-      if (container) container.remove();
-      const myTicketsBtn = document.querySelector('.my-tickets-btn');
-      if (myTicketsBtn) myTicketsBtn.remove();
-
-      // Show the user's choice as a bubble
-      addMessage(label, 'user');
-
-      // Enable the input for all paths
-      inputEl.disabled = false;
-      inputEl.placeholder = 'Message';
-
+    /* Routes the user to either the chat flow (it_issue/question) or the inline form panel.
+       alreadyActive = true means the user re-clicked the same button; skip showing the intro again. */
+    function handleQuickReply(key, label, alreadyActive) {
       if (key === 'it_issue' || key === 'question') {
-        if (key === 'it_issue') {
-          addMessage('Sure! Please describe the IT issue you\'re experiencing and I\'ll help troubleshoot.', 'bot');
+        // Chat flow — hide any open form panel, restore messages, enable input
+        document.getElementById('form-panel').style.display = 'none';
+        messagesEl.style.display = '';
+        enableInput();
+
+        currentChatKey = key;
+        const dsBar = document.getElementById('direct-submit-bar');
+
+        if (!alreadyActive) {
+          // First click on this button (or switching from another flow) — show intro message
+          if (key === 'it_issue') {
+            addMessage('Sure! Please describe the IT issue you\'re experiencing and I\'ll help troubleshoot.', 'bot');
+            if (dsBar) dsBar.style.display = 'block';
+          } else {
+            addMessage('Sure! What would you like to know?', 'bot');
+            if (dsBar) dsBar.style.display = 'none';
+          }
         } else {
-          addMessage('Sure! What would you like to know?', 'bot');
+          // Re-clicked same button — just ensure correct bar visibility, no new message
+          if (dsBar) dsBar.style.display = key === 'it_issue' ? 'block' : 'none';
         }
       } else {
-        // Direct form — skip Gemini entirely, start form collection on the server
-        showTyping();
-        const quickParams = { message: '', sessionId: sessionId, quickStart: key };
-        if (currentUser) quickParams.userIdentity = currentUser;
-        google.script.run
-          .withSuccessHandler(function(response) {
-            hideTyping();
-            sessionId = response.sessionId || sessionId;
-            if (response.replies && response.replies.length > 1) {
-              response.replies.forEach(function(r) { if (r) addMessage(r, 'bot'); });
-            } else {
-              addMessage(response.reply, 'bot');
-            }
-          })
-          .withFailureHandler(function(err) {
-            hideTyping();
-            addMessage('Sorry, something went wrong. Please try again.', 'bot');
-            console.error(err);
-          })
-          .processChat(quickParams);
+        // Form flow — show the mini-form card panel
+        currentChatKey = null;
+        document.getElementById('direct-submit-bar').style.display = 'none';
+        showFormPanel(key);
       }
     }
 
+    /* Resets the chat to the initial state (called by "Start a New Conversation") */
     function resetChat() {
-      sessionId = '';
+      sessionId       = '';
+      currentFormType = null;
+      currentChatKey  = null;
+      savedChatKey    = null;
+      // Clear grid active states
+      document.querySelectorAll('.qs-btn').forEach(function(b) { b.classList.remove('active'); });
+      // Clear messages
       messagesEl.innerHTML = '';
+      messagesEl.style.display = '';
+      // Reset input bar
       chatInputEl.classList.remove('locked');
+      chatInputEl.style.display = '';
       inputEl.disabled = true;
       inputEl.placeholder = 'Choose an option above…';
-      chatInputEl.style.display = '';
+      // Hide form panel and direct-submit bar
+      document.getElementById('form-panel').style.display = 'none';
+      document.getElementById('direct-submit-bar').style.display = 'none';
       newChatBar.style.display = 'none';
-      // Show personalized greeting if user is known, otherwise generic
-      if (currentUser && currentUser.name) {
-        const firstName = currentUser.name.split(' ')[0];
-        addMessage('Hi, ' + firstName + '! 👋 How can I help you today?', 'bot');
-      } else {
-        addMessage(GREETING, 'bot');
-      }
-      showQuickReplies();
     }
 
     function enableInput() {
@@ -698,27 +1230,10 @@
       inputEl.placeholder = 'Message';
     }
 
-    function scrollToBottom() {
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    }
-
-    // ── Identity resolution ────────────────────────────────────────────────
+    // ── Identity resolution ─────────────────────────────────────────────────────
 
     function initChat() {
-      // Show a loading bubble while resolving identity
-      const loadingRow = document.createElement('div');
-      loadingRow.className = 'msg-row bot-row';
-      loadingRow.id = 'identity-loading-row';
-      const loadingAvatar = document.createElement('div');
-      loadingAvatar.className = 'bot-avatar';
-      loadingAvatar.innerHTML = '<img src="' + BOT_AVATAR_URL + '" alt="bot">';
-      const loadingBubble = document.createElement('div');
-      loadingBubble.className = 'message bot';
-      loadingBubble.textContent = 'Loading…';
-      loadingRow.appendChild(loadingAvatar);
-      loadingRow.appendChild(loadingBubble);
-      messagesEl.appendChild(loadingRow);
-
+      // Loading state is already visible in HTML — just call the server
       google.script.run
         .withSuccessHandler(onIdentityResolved)
         .withFailureHandler(function() { onIdentityResolved({ error: 'not_signed_in' }); })
@@ -726,9 +1241,8 @@
     }
 
     function onIdentityResolved(identity) {
-      // Remove loading bubble
-      const loadingRow = document.getElementById('identity-loading-row');
-      if (loadingRow) loadingRow.remove();
+      // Hide loading spinner regardless of outcome
+      loadingState.style.display = 'none';
 
       if (identity.error === 'not_signed_in') {
         showFullScreenMessage(
@@ -758,21 +1272,27 @@
         return;
       }
 
-      // Success — identity found
+      // Success — populate identity bar and show main content
       currentUser = identity;
-      const firstName = identity.name ? identity.name.split(' ')[0] : 'there';
-      addMessage('Hi, ' + firstName + '! 👋 I\'m the PSHS ZRC IT Help Desk assistant. How can I help you today?', 'bot');
+      const initials = getInitials(identity.name);
+      document.getElementById('id-bar-avatar').textContent = initials;
+      document.getElementById('id-bar-name').textContent   = identity.name || '';
+      document.getElementById('id-bar-sub').textContent    =
+        [identity.position, identity.department].filter(Boolean).join(' · ');
+      identityBar.style.display  = 'flex';
+      mainContent.style.display  = 'flex';
 
-      // Enable input immediately so the user can type without waiting or clicking a button
+      // Enable input immediately so user can type without clicking a button first
       enableInput();
 
-      // Check for ticket updates before showing quick-start buttons
+      // Fetch ticket status updates to populate the strip
       google.script.run
         .withSuccessHandler(onTicketUpdatesReceived)
-        .withFailureHandler(function() { showQuickReplies(); })
+        .withFailureHandler(function() { /* strip stays hidden on error */ })
         .getTicketUpdates(identity.email);
     }
 
+    /* Shows a full-screen error/auth message that replaces the container contents */
     function showFullScreenMessage(message, buttonText, buttonAction) {
       const container = document.querySelector('.chat-container');
       container.innerHTML = '';
@@ -790,39 +1310,57 @@
       container.appendChild(div);
     }
 
+    /* Renders the compact ticket status strip with status pills (max 2 visible) */
     function onTicketUpdatesReceived(updates) {
-      if (updates && updates.length > 0) {
-        const cacheKey = 'pshs_ticket_cache_' + (currentUser && currentUser.email ? currentUser.email : '');
-        let lastCache = {};
-        try { lastCache = JSON.parse(localStorage.getItem(cacheKey) || '{}'); } catch(e) {}
+      if (!updates || updates.length === 0) return;
 
-        const changed = updates.filter(function(t) { return lastCache[t.jrfNo] !== t.status; });
+      const cacheKey = 'pshs_ticket_cache_' + (currentUser && currentUser.email ? currentUser.email : '');
+      let lastCache = {};
+      try { lastCache = JSON.parse(localStorage.getItem(cacheKey) || '{}'); } catch(e) {}
 
-        if (changed.length > 0) {
-          addMessage('Here\'s an update on your recent IT requests:', 'bot');
-          changed.forEach(function(t) {
-            let statusLine = '';
-            if (t.status === 'Pending IT Assessment') statusLine = '⏳ Waiting for IT staff assessment';
-            else if (t.status === 'Pending Director Approval') statusLine = '⏳ Waiting for Campus Director approval';
-            else if (t.status === 'In Progress') statusLine = '🔧 Being worked on by ' + (t.assignedStaff || 'IT staff') + (t.targetDate ? ' — target: ' + t.targetDate : '');
-            else if (t.status === 'Completed') statusLine = '✅ Resolved on ' + (t.dateCompleted || '—');
-            else if (t.status === 'Rejected') statusLine = '❌ Request was not approved';
-            else statusLine = t.status;
+      // Only show tickets whose status has changed since last visit
+      const changed = updates.filter(function(t) { return lastCache[t.jrfNo] !== t.status; });
+      if (changed.length === 0) return;
 
-            const problem = t.problem.length > 60 ? t.problem.substring(0, 60) + '…' : t.problem;
-            addMessage('📋 Ticket #' + t.jrfNo + ' — ' + problem + '\n' + statusLine, 'bot');
-          });
-          addMessage('Let me know if you have a new request or need help.', 'bot');
+      const stripItems = document.getElementById('ticket-strip-items');
+      const visible    = changed.slice(0, 2);
 
-          // Update cache
-          updates.forEach(function(t) { lastCache[t.jrfNo] = t.status; });
-          try { localStorage.setItem(cacheKey, JSON.stringify(lastCache)); } catch(e) {}
-        }
+      visible.forEach(function(t) {
+        const item = document.createElement('div');
+        item.className = 'ticket-strip-item';
+
+        // Shorten status label for the pill
+        let pillLabel = t.status;
+        if (t.status.includes('Pending')) pillLabel = 'Pending';
+        if (t.status === 'In Progress')   pillLabel = 'In Progress';
+        if (t.status === 'Completed')     pillLabel = 'Completed';
+        if (t.status === 'Rejected')      pillLabel = 'Rejected';
+
+        const problem = t.problem.length > 45 ? t.problem.substring(0, 45) + '…' : t.problem;
+        item.innerHTML =
+          '<span class="ts-jrf">#' + escHtml(t.jrfNo) + '</span>' +
+          '<span class="ts-problem">' + escHtml(problem) + '</span>' +
+          '<span class="ts-pill ' + statusPillClass(t.status) + '">' + escHtml(pillLabel) + '</span>';
+        stripItems.appendChild(item);
+      });
+
+      // Show "N more" toggle if there are more than 2 updates
+      if (changed.length > 2) {
+        const more = document.createElement('button');
+        more.className   = 'ticket-strip-toggle';
+        more.textContent = '+ ' + (changed.length - 2) + ' more — tap to view all';
+        more.onclick     = openMyTickets;
+        stripItems.appendChild(more);
       }
-      showQuickReplies();
+
+      document.getElementById('ticket-strip').style.display = 'block';
+
+      // Update local cache so strip only shows truly new changes next time
+      updates.forEach(function(t) { lastCache[t.jrfNo] = t.status; });
+      try { localStorage.setItem(cacheKey, JSON.stringify(lastCache)); } catch(e) {}
     }
 
-    // ── My Tickets panel ────────────────────────────────────────────────────
+    // ── My Tickets overlay panel ─────────────────────────────────────────────────
 
     function openMyTickets() {
       google.script.run
@@ -833,13 +1371,12 @@
 
     function renderMyTicketsPanel(tickets) {
       const container = document.querySelector('.chat-container');
-      // Remove existing panel if any
-      const existing = document.getElementById('my-tickets-panel');
+      const existing  = document.getElementById('my-tickets-panel');
       if (existing) existing.remove();
 
       const panel = document.createElement('div');
       panel.className = 'my-tickets-panel';
-      panel.id = 'my-tickets-panel';
+      panel.id        = 'my-tickets-panel';
 
       const header = document.createElement('div');
       header.className = 'my-tickets-panel-header';
@@ -847,14 +1384,14 @@
       headerTitle.textContent = '📋 My IT Tickets';
       header.appendChild(headerTitle);
       const backBtn = document.createElement('button');
-      backBtn.textContent = '← Back to Chat';
+      backBtn.textContent = '← Back';
       backBtn.onclick = function() { panel.remove(); };
       header.appendChild(backBtn);
       panel.appendChild(header);
 
       const list = document.createElement('div');
       list.className = 'my-tickets-list';
-      list.id = 'my-tickets-list';
+      list.id        = 'my-tickets-list';
 
       if (!tickets || tickets.length === 0) {
         list.innerHTML = '<p style="text-align:center;color:#888;padding:32px;font-size:14px;">No tickets found.</p>';
@@ -882,20 +1419,20 @@
       detail.className = 'ticket-detail';
 
       const backBtn = document.createElement('button');
-      backBtn.className = 'back-btn';
+      backBtn.className   = 'back-btn';
       backBtn.textContent = '← Back to list';
       backBtn.onclick = function() { renderMyTicketsPanel(allTickets); };
       detail.appendChild(backBtn);
 
       const fields = [
-        ['JRF #:', t.jrfNo],
-        ['Date:', t.date],
-        ['Status:', t.status],
+        ['JRF #:',   t.jrfNo],
+        ['Date:',    t.date],
+        ['Status:',  t.status],
         ['Problem:', t.problem],
       ];
       if (t.assignedStaff) fields.push(['Assigned to:', t.assignedStaff]);
       if (t.targetDate)    fields.push(['Target date:', t.targetDate]);
-      if (t.dateCompleted) fields.push(['Completed:', t.dateCompleted]);
+      if (t.dateCompleted) fields.push(['Completed:',   t.dateCompleted]);
 
       fields.forEach(function(f) {
         const p = document.createElement('p');
@@ -914,7 +1451,213 @@
         .replace(/"/g, '&quot;');
     }
 
-    // Greeting + option buttons on load — replaced by identity-aware initChat()
+    // ── Form Panel (Publication / CCTV / Technical) ──────────────────────────────
+
+    /* Builds and shows the inline mini-form card for the given request type.
+       Hides the chat message area and input bar while the form is visible. */
+    function showFormPanel(type) {
+      currentFormType  = type;
+      const cfg        = FORM_CONFIG[type];
+      const formPanel  = document.getElementById('form-panel');
+
+      const initials = currentUser ? getInitials(currentUser.name) : '?';
+      const idName   = currentUser ? (currentUser.name || '') : 'Unknown';
+      const idSub    = currentUser
+        ? [currentUser.position, currentUser.departmentFull || currentUser.department].filter(Boolean).join(' · ')
+        : '';
+
+      // CCTV-only: Data Privacy Act warning card with confirmation checkbox
+      const cctvHtml = type === 'cctv'
+        ? '<div class="cctv-warning">' +
+            '<div class="cctv-warning-title">⚠️ Data Privacy Act requirement</div>' +
+            '<div>You must have a formal letter addressed to the Campus Director containing the ' +
+            'exact date, time range, camera location, and reason. The Director must approve before IT can proceed.</div>' +
+            '<label class="cctv-checkbox-label">' +
+              '<input type="checkbox" id="cctv-letter-checkbox" onchange="updateFormSubmitState()">' +
+              '<span>I confirm I have a Campus Director-approved letter for this CCTV request.</span>' +
+            '</label>' +
+          '</div>'
+        : '';
+
+      formPanel.innerHTML =
+        '<div class="mini-form">' +
+          '<div>' +
+            '<div class="mini-form-title">' + cfg.icon + ' ' + escHtml(cfg.title) + '</div>' +
+            '<div class="mini-form-subtitle">' + escHtml(cfg.subtitle) + '</div>' +
+          '</div>' +
+          '<div class="form-identity-row">' +
+            '<div class="form-id-avatar">' + escHtml(initials) + '</div>' +
+            '<div class="form-id-text">' +
+              '<div class="form-id-name">' + escHtml(idName) + '</div>' +
+              '<div class="form-id-sub">'  + escHtml(idSub)  + '</div>' +
+            '</div>' +
+            '<span class="form-id-lock">🔒</span>' +
+          '</div>' +
+          cctvHtml +
+          '<div>' +
+            '<label class="form-field-label">Description <span style="color:#c00">*</span></label>' +
+            '<textarea class="form-textarea" id="form-description" placeholder="' + escHtml(cfg.placeholder) + '" oninput="updateWordCount()"></textarea>' +
+            '<div class="word-count insufficient" id="word-count-display">0 words — please add more detail</div>' +
+          '</div>' +
+          '<div class="form-error" id="form-error"></div>' +
+          '<button class="form-submit-btn" id="form-submit-btn" onclick="submitFormRequest()" disabled>Submit Request</button>' +
+          '<button class="form-back-link" onclick="hideFormPanel()">← Back</button>' +
+        '</div>';
+
+      // Save the current chat key so hideFormPanel can restore it without re-showing the intro
+      savedChatKey   = currentChatKey;
+      currentChatKey = null;
+
+      // Hide chat view and input bar while form is active
+      messagesEl.style.display                                   = 'none';
+      chatInputEl.style.display                                  = 'none';
+      document.getElementById('direct-submit-bar').style.display = 'none';
+      formPanel.style.display                                    = 'flex';
+    }
+
+    /* Hides the form panel and restores the chat view */
+    function hideFormPanel() {
+      document.getElementById('form-panel').style.display = 'none';
+      messagesEl.style.display  = '';
+      chatInputEl.style.display = '';
+      currentFormType = null;
+      // Restore the chat key that was active before the form was opened
+      currentChatKey = savedChatKey;
+      savedChatKey   = null;
+
+      // Restore direct-submit bar visibility and active button state
+      if (currentChatKey === 'it_issue') {
+        document.getElementById('direct-submit-bar').style.display = 'block';
+        // Re-mark the IT Issue button as active so a subsequent click is treated as alreadyActive
+        const itBtn = document.querySelector('.qs-btn[data-type="it_issue"]');
+        if (itBtn) itBtn.classList.add('active');
+      } else {
+        document.getElementById('direct-submit-bar').style.display = 'none';
+        document.querySelectorAll('.qs-btn').forEach(function(b) { b.classList.remove('active'); });
+      }
+    }
+
+    /* Updates the word count display and enables/disables the submit button */
+    function updateWordCount() {
+      const textarea = document.getElementById('form-description');
+      const countEl  = document.getElementById('word-count-display');
+      const words    = (textarea.value.trim().match(/\S+/g) || []).length;
+      const ok       = words >= 8;
+      countEl.textContent = words + (ok ? ' words ✓' : ' words — please add more detail');
+      countEl.className   = 'word-count ' + (ok ? 'sufficient' : 'insufficient');
+      updateFormSubmitState();
+    }
+
+    /* Enables the submit button only when word count >= 15 AND CCTV checkbox is checked (if applicable) */
+    function updateFormSubmitState() {
+      const textarea  = document.getElementById('form-description');
+      const submitBtn = document.getElementById('form-submit-btn');
+      if (!textarea || !submitBtn) return;
+      const words  = (textarea.value.trim().match(/\S+/g) || []).length;
+      const wordOk = words >= 8;
+      let   cctvOk = true;
+      if (currentFormType === 'cctv') {
+        const cb = document.getElementById('cctv-letter-checkbox');
+        cctvOk   = cb && cb.checked;
+      }
+      submitBtn.disabled = !(wordOk && cctvOk);
+    }
+
+    /* Validates and submits the form via submitFormTicket() server-side */
+    function submitFormRequest() {
+      const textarea    = document.getElementById('form-description');
+      const submitBtn   = document.getElementById('form-submit-btn');
+      const errorEl     = document.getElementById('form-error');
+      const description = textarea ? textarea.value.trim() : '';
+
+      const words = (description.match(/\S+/g) || []).length;
+      if (words < 8) {
+        errorEl.textContent   = 'Please add more detail to your description (at least 8 words).';
+        errorEl.style.display = 'block';
+        return;
+      }
+
+      let cctvLetterConfirmed = false;
+      if (currentFormType === 'cctv') {
+        const cb = document.getElementById('cctv-letter-checkbox');
+        if (!cb || !cb.checked) {
+          errorEl.textContent   = 'You must confirm you have a Director-approved letter before submitting a CCTV request.';
+          errorEl.style.display = 'block';
+          return;
+        }
+        cctvLetterConfirmed = true;
+      }
+
+      // Show loading state while waiting for server response
+      errorEl.style.display = 'none';
+      submitBtn.disabled    = true;
+      submitBtn.classList.add('loading');
+      submitBtn.textContent = '⏳ Submitting…';
+
+      google.script.run
+        .withSuccessHandler(onFormSubmitSuccess)
+        .withFailureHandler(onFormSubmitError)
+        .submitFormTicket({
+          description:         description,
+          quickStartType:      currentFormType,
+          userIdentity:        currentUser,
+          sessionId:           sessionId,
+          cctvLetterConfirmed: cctvLetterConfirmed,
+        });
+    }
+
+    /* Called when submitFormTicket() succeeds — hides form, shows success bubble, locks chat */
+    function onFormSubmitSuccess(result) {
+      if (result && result.error) {
+        onFormSubmitError({ message: result.message || 'Something went wrong.' });
+        return;
+      }
+
+      document.getElementById('form-panel').style.display         = 'none';
+      document.getElementById('direct-submit-bar').style.display = 'none';
+      currentFormType = null;
+      currentChatKey  = null;
+      savedChatKey    = null;
+      messagesEl.style.display = '';
+      // Clear active grid buttons
+      document.querySelectorAll('.qs-btn').forEach(function(b) { b.classList.remove('active'); });
+
+      const name    = (result && result.name)           || (currentUser && currentUser.name)           || '—';
+      const dept    = (result && result.departmentFull) || (currentUser && (currentUser.departmentFull || currentUser.department)) || '—';
+      const sup     = (result && result.supervisor)     || (currentUser && currentUser.supervisor)     || '—';
+      const jrfNo   = (result && result.jrfNo)         || '—';
+      const rawDesc = (result && result.rawDesc)        || '';
+
+      const successMsg =
+        '✅ Your IT Job Request has been submitted!\n\n' +
+        '📌 Ticket #' + jrfNo + '\n' +
+        '👤 ' + name + '\n' +
+        '🏢 ' + dept + '\n' +
+        '👨‍💼 Supervisor: ' + sup + '\n' +
+        '📝 ' + rawDesc + '\n\n' +
+        'Your supervisor will receive an approval email shortly. Once approved, IT staff will be assigned to take action.';
+
+      addMessage(successMsg, 'bot');
+      lockChat();
+    }
+
+    /* Called when submitFormTicket() throws a hard error — re-enables the form */
+    function onFormSubmitError(err) {
+      const submitBtn = document.getElementById('form-submit-btn');
+      const errorEl   = document.getElementById('form-error');
+      if (submitBtn) {
+        submitBtn.disabled    = false;
+        submitBtn.classList.remove('loading');
+        submitBtn.textContent = 'Submit Request';
+      }
+      const msg = (err && err.message) ? err.message : 'Something went wrong. Please try again or contact the IT unit directly.';
+      if (errorEl) {
+        errorEl.textContent   = msg;
+        errorEl.style.display = 'block';
+      }
+    }
+
+    // Start identity resolution immediately on page load
     window.addEventListener('load', function() {
       initChat();
     });

@@ -262,10 +262,19 @@ function processChat(params) {
     session.identityVerified          = true;
   }
 
-  // Handle quick-start buttons (Publication/Design, CCTV, Technical Assistance).
-  // Skips Gemini entirely — initialises the form collection state directly.
+  // Handle quick-start buttons for chat-only types (it_issue, question).
+  // publication / cctv / technical now use the inline form panel and submit via
+  // submitFormTicket() — they no longer route through processChat().
   if (params.quickStart && !session.state) {
-    const result = handleQuickStart(params.quickStart, session);
+    const type = params.quickStart;
+    if (type === 'publication' || type === 'cctv' || type === 'technical') {
+      // Stale client — return a safe informational reply
+      return {
+        reply: 'Please use the form panel to submit this type of request.',
+        sessionId: currentId,
+      };
+    }
+    const result = handleQuickStart(type, session);
     cache.put('chat_session_' + currentId, JSON.stringify(
       Object.assign({}, result.session, { messageCount: 1 })
     ), CHAT_SESSION_TTL);
@@ -471,66 +480,26 @@ function handleChat(message, session) {
 // =============================================================================
 
 /**
- * Initialises the form collection state directly when the user picks a
- * quick-start button (Publication/Design, CCTV, Technical Assistance).
- * Skips Gemini entirely; pre-sets recType = 'Others, Repair' for all three.
+ * Handles quick-start button types for the chat flow.
+ * 'publication', 'cctv', and 'technical' now use the inline form panel in Index.html
+ * and submit directly via submitFormTicket() — they no longer go through processChat().
+ * This function is kept for safety but should not be reached in normal operation.
  *
- * @param {string} type - 'publication' | 'cctv' | 'technical'
+ * @param {string} type - 'it_issue' | 'question' (form types are now handled client-side)
  * @param {object} session
  */
 function handleQuickStart(type, session) {
-  session.state           = 'collecting';
-  session.step            = 0;
-  // Preserve identity fields already pre-filled from Google account — only reset
-  // form-specific fields (description, recType). Wiping formData here would lose
-  // name/position/department/supervisor and cause the ticket to show "—" for all.
-  session.formData = {
-    name:            (session.formData && session.formData.name)            || '',
-    position:        (session.formData && session.formData.position)        || '',
-    department:      (session.formData && session.formData.department)      || '',
-    departmentFull:  (session.formData && session.formData.departmentFull)  || '',
-    supervisor:      (session.formData && session.formData.supervisor)      || '',
-    supervisorEmail: (session.formData && session.formData.supervisorEmail) || '',
-    userEmail:       (session.formData && session.formData.userEmail)       || '',
-    recType:         'Others, Repair',
-  };
-  session.history         = [];
-  session.quickStartSteps = true; // use QUICK_START_FORM_STEPS (description first)
-  session.quickStartType  = type; // stored so cancel can restart the same flow
-
-  // Description prompt is shown immediately; customised per request type so the
-  // user knows exactly what details to provide before we ask for their name.
-  if (type === 'publication') {
-    session.quickStartLabel = 'Publication/Design Request';
-    const prompt =
-      'Please describe your publication or design request.\n' +
-      '(e.g. type of material, purpose, key information to include — or let us know if you\'ve already sent the details to the IT unit.)';
-    return { reply: prompt, replies: [prompt], session };
+  // Form-type buttons now use the inline form panel + submitFormTicket() directly.
+  // Guard against stale clients that may still send quickStart for these types.
+  if (type === 'publication' || type === 'cctv' || type === 'technical') {
+    const msg = 'This request type now uses the form — please use the form panel in the chat interface.';
+    return { reply: msg, replies: [msg], session };
   }
 
-  if (type === 'cctv') {
-    session.quickStartLabel = 'CCTV Viewing Request';
-    // Set cctv_letter_check state — must confirm letter before filing ticket
-    session.state = 'cctv_letter_check';
-    const cctvNote =
-      'CCTV viewing requests are governed by the Data Privacy Act.\n\n' +
-      'Before I can file a ticket, the requesting party must prepare a formal letter ' +
-      'addressed to the Campus Director containing:\n' +
-      '• Exact date and time range of the footage needed\n' +
-      '• Camera location\n' +
-      '• Reason for the request\n\n' +
-      'The Campus Director must approve the letter before IT can proceed.';
-    const letterQuestion = 'Do you currently have a letter approved by the Campus Director? Reply yes or no.';
-    const replies = [cctvNote, letterQuestion];
-    return { reply: replies.join('\n\n'), replies, session };
-  }
-
-  // Technical Assistance
-  session.quickStartLabel = 'Technical Assistance';
-  const prompt =
-    'Please describe the technical assistance you need.\n' +
-    '(You may also let us know if you\'ve already provided the details to the IT unit.)';
-  return { reply: prompt, replies: [prompt], session };
+  // it_issue and question are handled directly in Index.html (no quickStart call needed).
+  // This branch is a fallback only.
+  const msg = 'How can I help you today?';
+  return { reply: msg, replies: [msg], session };
 }
 
 // =============================================================================
@@ -1109,10 +1078,11 @@ function callGemini(message, history, kbContext) {
     // ── CRITICAL OVERRIDES — read these first, they override everything else ──
     'CRITICAL OVERRIDES (apply before all other rules):\n\n' +
 
-    'OVERRIDE A — Publication / design / information requests:\n' +
+    'OVERRIDE A — Publication / design mentions INSIDE the IT Issue / Repair or Ask a Question chat:\n' +
+    '(This override does NOT apply when using the Publication / Design form button — that goes directly to submitFormTicket().)\n' +
     'The IT Unit is also the designated Information Officers of PSHS ZRC, so they handle ALL publication and design work.\n' +
     'Trigger words: poster, tarpaulin, tarps, pubmat, design, layout, social media, facebook, post, certificate, announcement, publication, graphic, infographic, flyer, banner.\n' +
-    'WHEN ANY of these words appear in the request — even in passing — you MUST:\n' +
+    'WHEN ANY of these words appear in the IT Issue chat — even in passing — you MUST:\n' +
     '  1. Write EXACTLY ONE short sentence acknowledging the request. Example: "Got it, I\'ll file a request for your poster design."\n' +
     '  2. IMMEDIATELY end your reply with: %%FILE_TICKET:<one-sentence description>%%\n' +
     'NEVER ask for design details, event info, dimensions, content, deadline, or any other specifics.\n' +
@@ -1144,8 +1114,9 @@ function callGemini(message, history, kbContext) {
        '      - The problem clearly requires physical intervention (hardware broken,\n' +
        '        needs on-site inspection, requires parts replacement)\n' +
        '   d. NEVER send %%FILE_TICKET%% in the same reply as troubleshooting questions.\n' +
-       '   e. For Publication, CCTV, and Technical Assistance flows: send %%FILE_TICKET%%\n' +
-       '      immediately after the description is collected — no troubleshooting needed.\n' +
+       '   e. For Technical Assistance and CCTV mentions inside the IT Issue chat: send %%FILE_TICKET%%\n' +
+       '      immediately. Note: Publication, CCTV, and Technical Assistance each have their own\n' +
+       '      dedicated form panel — if the user is using those buttons, this rule does not apply.\n' +
     '5. Do not make up ticket numbers or form details.\n' +
     '6. This chatbot does NOT support file uploads. If a user mentions attaching files, inform them and ask them to describe in text.\n' +
     '7. CCTV viewing requests are governed by the Data Privacy Act. First inform the user they need a formal letter to the Campus Director with the exact date, time range, camera location, and reason — the Director must approve before IT can proceed. Do NOT ask for CCTV details. Then end with %%FILE_TICKET:<description>%%.\n\n' +
@@ -1369,6 +1340,112 @@ function saveTicket(data) {
   } catch (err) {
     Logger.log('saveTicket error: ' + err + '\n' + err.stack);
     return { ok: false, error: 'There was a problem saving your request. Please try again or contact the IT unit directly.' };
+  }
+}
+
+// =============================================================================
+// submitFormTicket() — inline form panel submission for publication/cctv/technical
+// =============================================================================
+
+/**
+ * Handles direct form-panel submissions for publication, CCTV, and technical assistance.
+ * Called from Index.html when the inline form is submitted — bypasses the chat
+ * session state machine entirely.
+ *
+ * @param {object} params - {
+ *   description: string,            // raw description typed by user
+ *   quickStartType: string,         // 'publication' | 'cctv' | 'technical'
+ *   userIdentity: object,           // { email, name, position, department, departmentFull, supervisor, supervisorEmail }
+ *   sessionId: string,              // for logging (not used for rate limiting here)
+ *   cctvLetterConfirmed: boolean,   // true only for CCTV; checkbox value from the form
+ * }
+ * @returns {{ jrfNo, rawDesc, name, departmentFull, supervisor } | { error, message }}
+ */
+function submitFormTicket(params) {
+  try {
+    // 1. Validate identity
+    const id = params.userIdentity;
+    if (!id || !id.email || !id.name) {
+      return { error: 'no_identity', message: 'Identity not verified. Please reload the page and try again.' };
+    }
+
+    // 2. CCTV letter check (server-side — belt-and-suspenders; the checkbox already
+    //    prevents submission in Index.html, but validate here too for security)
+    if (params.quickStartType === 'cctv' && !params.cctvLetterConfirmed) {
+      return { error: 'cctv_no_letter', message: 'A Campus Director-approved letter is required before filing a CCTV viewing request.' };
+    }
+
+    // 3. Check global rate limit
+    try { checkGlobalRateLimit(); } catch (e) {
+      return { error: 'rate_limit', message: e.message };
+    }
+
+    // 4. Check per-user rate limit (max 3/day; resets at midnight PHT)
+    const itStaffEmails = (PropertiesService.getScriptProperties().getProperty('IT_STAFF_EMAIL') || '')
+      .split(',').map(function(e) { return e.trim().toLowerCase(); }).filter(Boolean);
+    const isITStaff = itStaffEmails.includes(id.email.toLowerCase().trim());
+    if (!isITStaff) {
+      const userRateKey = 'rate_user_' + id.email;
+      const todayCount  = parseInt(CacheService.getScriptCache().get(userRateKey) || '0', 10);
+      if (todayCount >= 3) {
+        const nowPht    = Math.floor(Date.now() / 1000) + 28800;
+        const hoursLeft = Math.ceil(Math.floor(86400 - (nowPht % 86400)) / 3600);
+        return {
+          error:   'rate_limit',
+          message: 'You have already submitted 3 IT Job Requests today. Your limit resets in about ' +
+                   hoursLeft + ' hour(s). If this is urgent, please contact the IT unit directly.',
+        };
+      }
+    }
+
+    // 5. Context check — return error cleanly; do NOT use strikeCount (form ≠ chat)
+    const rawDesc = sanitizeInput(params.description || '');
+    if (!rawDesc) {
+      return { error: 'no_description', message: 'Please enter a description.' };
+    }
+    if (!hasEnoughContext(rawDesc)) {
+      return { error: 'insufficient_context', message: 'Please add more detail to your description before submitting.' };
+    }
+
+    // 6. Build description with label prefix, then formally paraphrase
+    const labelMap = {
+      publication: 'Publication/Design Request',
+      cctv:        'CCTV Viewing Request',
+      technical:   'Technical Assistance',
+    };
+    const label          = labelMap[params.quickStartType] || params.quickStartType;
+    const rawDescription = label + ': ' + rawDesc;
+    const formalDesc     = paraphraseDescription(rawDescription);
+
+    // 7. Save ticket — recType always 'Others, Repair' for all three form types
+    const saved = saveTicket({
+      name:            id.name            || '',
+      position:        id.position        || '',
+      department:      id.department      || '',
+      departmentFull:  id.departmentFull  || id.department || '',
+      supervisor:      id.supervisor      || '',
+      supervisorEmail: id.supervisorEmail || '',
+      userEmail:       id.email           || '',
+      description:     formalDesc,
+      rawDescription:  rawDescription,
+      recType:         'Others, Repair',
+    });
+
+    if (!saved.ok) {
+      return { error: 'save_failed', message: saved.error || 'There was a problem saving your request.' };
+    }
+
+    // 8. Return success payload to Index.html for the confirmation bubble
+    return {
+      jrfNo:          saved.jrfNo,
+      rawDesc:        rawDescription.substring(0, 120),
+      name:           id.name            || '',
+      departmentFull: id.departmentFull  || id.department || '',
+      supervisor:     id.supervisor      || '',
+    };
+  } catch (err) {
+    Logger.log('submitFormTicket error: ' + err + '\n' + err.stack);
+    return { error: 'save_failed', message: 'Something went wrong. Please try again or contact the IT unit directly.' };
   }
 }
 
