@@ -1763,7 +1763,6 @@ function sendApprovalEmail(type, jrfNo, ticket) {
   // Determine recipient
   let recipientEmail, recipientName;
   if (type === 'supervisor') {
-    // Use direct email from Departments lookup first; fall back to Staff sheet name lookup
     recipientEmail = ticket.supervisorEmail || getStaffEmail(ticket.supervisor);
     recipientName  = ticket.supervisor || 'Supervisor';
   } else {
@@ -1776,54 +1775,164 @@ function sendApprovalEmail(type, jrfNo, ticket) {
     return;
   }
 
-  const approveUrl = webAppUrl + '?token=' + token + '&action=approve';
-  const rejectUrl  = webAppUrl + '?token=' + token + '&action=reject';
-  const subject    = '[ITJRF ' + jrfNo + '] Approval Required — ' + ticket.name;
+  // Resolve full department name for display (e.g. "Student Services Division" not "SSD")
+  const deptLookup = ticket.department ? lookupDepartment(ticket.department) : null;
+  const deptFull   = (deptLookup && deptLookup.fullName) ? deptLookup.fullName : (ticket.department || '—');
 
-  const divider = '\n' + '─'.repeat(48) + '\n';
+  const approveUrl  = webAppUrl + '?token=' + token + '&action=approve';
+  const rejectUrl   = webAppUrl + '?token=' + token + '&action=reject';
+  const actionLabel = type === 'supervisor' ? 'approval' : 'approval';
+  const subject     = '[PSHS ZRC] IT Job Request #' + jrfNo + ' — Awaiting your ' + actionLabel;
 
-  const body = type === 'supervisor'
-    ? 'Dear ' + recipientName + ',\n\n' +
-      'A staff member under your supervision has submitted an IT Job Request Form that requires your approval.\n' +
-      divider +
-      'JRF #:          ' + jrfNo                + '\n' +
-      'Date Submitted: ' + ticket.date           + '\n' +
-      'Name:           ' + ticket.name           + '\n' +
-      'Position:       ' + ticket.position       + '\n' +
-      'Department:     ' + (ticket.department || '—') + '\n' +
-      divider +
-      'PROBLEM DESCRIPTION\n' +
-      ticket.problem + '\n' +
-      (ticket.recommendation ? divider + 'Recommendation Type: ' + ticket.recommendation + '\n' : '') +
-      divider +
-      'Please click one of the links below to respond:\n\n' +
-      '  ✅ APPROVE:  ' + approveUrl + '\n\n' +
-      '  ❌ REJECT:   ' + rejectUrl  + '\n\n' +
-      'Each link can only be used once. If you did not expect this email, please contact the IT Unit.\n\n' +
-      'PSHS ZRC IT Unit'
-    : 'Dear ' + recipientName + ',\n\n' +
-      'The IT Unit has completed its technical assessment for the following IT Job Request and is requesting your approval to proceed with the service.\n' +
-      divider +
-      'JRF #:          ' + jrfNo                          + '\n' +
-      'Requester:      ' + ticket.name + ' (' + ticket.position + ')\n' +
-      'Assigned Staff: ' + (ticket.assignedStaff || 'TBA') + '\n' +
-      'Target Date:    ' + (ticket.targetDate    || 'TBA') + '\n' +
-      divider +
-      'PROBLEM DESCRIPTION\n' +
-      ticket.problem + '\n' +
-      divider +
-      'TECHNICAL ASSESSMENT\n' +
-      (ticket.assessment || '—') + '\n' +
-      divider +
-      'Recommendation Type: ' + ticket.recommendation + '\n' +
-      divider +
-      'Please click one of the links below to respond:\n\n' +
-      '  ✅ APPROVE:  ' + approveUrl + '\n\n' +
-      '  ❌ REJECT:   ' + rejectUrl  + '\n\n' +
-      'Each link can only be used once. If you did not expect this email, please contact the IT Unit.\n\n' +
-      'PSHS ZRC IT Unit';
+  // ── Shared HTML snippets ──────────────────────────────────────────────────
+  const htmlHeader = `
+    <div style="background:#1a3c6e;padding:20px 28px 16px;border-radius:8px 8px 0 0;">
+      <div style="color:#f5c842;font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px;">
+        Philippine Science High School — ZRC
+      </div>
+      <div style="color:#ffffff;font-size:18px;font-weight:700;">IT Job Request Form</div>
+      <div style="color:#a8bcd4;font-size:13px;margin-top:2px;">Ticket #${jrfNo} — Action Required</div>
+    </div>`;
 
-  MailApp.sendEmail(recipientEmail, subject, body);
+  const htmlFooter = `
+    <div style="background:#f0f4f8;padding:14px 28px;border-radius:0 0 8px 8px;border-top:1px solid #dde3ea;">
+      <p style="margin:0;font-size:12px;color:#6b7a8d;">
+        Each link can only be used once and expires in 7 days.<br>
+        If you did not expect this email, please contact the IT Unit.
+      </p>
+      <p style="margin:8px 0 0;font-size:12px;color:#6b7a8d;">— PSHS ZRC IT Unit</p>
+    </div>`;
+
+  const btnStyle = (bg, border) =>
+    `display:inline-block;padding:12px 32px;border-radius:6px;font-size:15px;font-weight:700;` +
+    `text-decoration:none;color:#ffffff;background:${bg};border:2px solid ${border};`;
+
+  // ── Build body per type ───────────────────────────────────────────────────
+  let htmlBody, plainBody;
+
+  if (type === 'supervisor') {
+    htmlBody = `
+<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #dde3ea;border-radius:8px;">
+  ${htmlHeader}
+  <div style="padding:24px 28px;background:#ffffff;">
+    <p style="margin:0 0 16px;font-size:15px;color:#1a1a1a;">Dear <strong>${recipientName}</strong>,</p>
+    <p style="margin:0 0 20px;font-size:14px;color:#444;">
+      A staff member under your supervision has submitted an IT Job Request Form that requires your approval.
+    </p>
+    <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:20px;">
+      <tr style="background:#f0f4f8;">
+        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;width:38%;border-bottom:1px solid #dde3ea;">JRF #</td>
+        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${jrfNo}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;border-bottom:1px solid #dde3ea;">Date Submitted</td>
+        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${ticket.date}</td>
+      </tr>
+      <tr style="background:#f0f4f8;">
+        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;border-bottom:1px solid #dde3ea;">Name</td>
+        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${ticket.name}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;border-bottom:1px solid #dde3ea;">Position</td>
+        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${ticket.position}</td>
+      </tr>
+      <tr style="background:#f0f4f8;">
+        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;">Department / Office</td>
+        <td style="padding:8px 12px;color:#1a1a1a;">${deptFull}</td>
+      </tr>
+    </table>
+    <div style="background:#f8f9fb;border-left:4px solid #1a3c6e;padding:14px 16px;border-radius:0 6px 6px 0;margin-bottom:24px;">
+      <div style="font-size:11px;font-weight:700;color:#1a3c6e;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;">Problem Description</div>
+      <div style="font-size:14px;color:#1a1a1a;line-height:1.6;">${ticket.problem}</div>
+    </div>
+    <div style="text-align:center;margin-bottom:8px;">
+      <a href="${approveUrl}" style="${btnStyle('#1a7a3c','#155f30')}">✅ Approve</a>
+      &nbsp;&nbsp;&nbsp;
+      <a href="${rejectUrl}" style="${btnStyle('#b91c1c','#8f1515')}">❌ Reject</a>
+    </div>
+    <p style="text-align:center;font-size:12px;color:#6b7a8d;margin:12px 0 0;">Click a button above to respond. Links are single-use.</p>
+  </div>
+  ${htmlFooter}
+</div>`;
+
+    plainBody =
+      'Dear ' + recipientName + ',\n\n' +
+      'A staff member under your supervision has submitted an IT Job Request Form that requires your approval.\n\n' +
+      'JRF #:            ' + jrfNo            + '\n' +
+      'Date Submitted:   ' + ticket.date       + '\n' +
+      'Name:             ' + ticket.name       + '\n' +
+      'Position:         ' + ticket.position   + '\n' +
+      'Department:       ' + deptFull          + '\n\n' +
+      'PROBLEM DESCRIPTION\n' + ticket.problem + '\n\n' +
+      'APPROVE: ' + approveUrl + '\n' +
+      'REJECT:  ' + rejectUrl  + '\n\n' +
+      'Each link can only be used once and expires in 7 days.\n— PSHS ZRC IT Unit';
+
+  } else {
+    htmlBody = `
+<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #dde3ea;border-radius:8px;">
+  ${htmlHeader}
+  <div style="padding:24px 28px;background:#ffffff;">
+    <p style="margin:0 0 16px;font-size:15px;color:#1a1a1a;">Dear <strong>${recipientName}</strong>,</p>
+    <p style="margin:0 0 20px;font-size:14px;color:#444;">
+      The IT Unit has completed its technical assessment for the following IT Job Request and is requesting your approval to proceed with the service.
+    </p>
+    <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:20px;">
+      <tr style="background:#f0f4f8;">
+        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;width:38%;border-bottom:1px solid #dde3ea;">JRF #</td>
+        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${jrfNo}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;border-bottom:1px solid #dde3ea;">Requester</td>
+        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${ticket.name} — ${ticket.position}</td>
+      </tr>
+      <tr style="background:#f0f4f8;">
+        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;border-bottom:1px solid #dde3ea;">Assigned Staff</td>
+        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${ticket.assignedStaff || 'TBA'}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;border-bottom:1px solid #dde3ea;">Target Date</td>
+        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${ticket.targetDate || 'TBA'}</td>
+      </tr>
+      <tr style="background:#f0f4f8;">
+        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;">Recommendation</td>
+        <td style="padding:8px 12px;color:#1a1a1a;">${ticket.recommendation || '—'}</td>
+      </tr>
+    </table>
+    <div style="background:#f8f9fb;border-left:4px solid #1a3c6e;padding:14px 16px;border-radius:0 6px 6px 0;margin-bottom:16px;">
+      <div style="font-size:11px;font-weight:700;color:#1a3c6e;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;">Problem Description</div>
+      <div style="font-size:14px;color:#1a1a1a;line-height:1.6;">${ticket.problem}</div>
+    </div>
+    <div style="background:#f8f9fb;border-left:4px solid #f5c842;padding:14px 16px;border-radius:0 6px 6px 0;margin-bottom:24px;">
+      <div style="font-size:11px;font-weight:700;color:#7a6000;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;">Technical Assessment</div>
+      <div style="font-size:14px;color:#1a1a1a;line-height:1.6;">${ticket.assessment || '—'}</div>
+    </div>
+    <div style="text-align:center;margin-bottom:8px;">
+      <a href="${approveUrl}" style="${btnStyle('#1a7a3c','#155f30')}">✅ Approve</a>
+      &nbsp;&nbsp;&nbsp;
+      <a href="${rejectUrl}" style="${btnStyle('#b91c1c','#8f1515')}">❌ Reject</a>
+    </div>
+    <p style="text-align:center;font-size:12px;color:#6b7a8d;margin:12px 0 0;">Click a button above to respond. Links are single-use.</p>
+  </div>
+  ${htmlFooter}
+</div>`;
+
+    plainBody =
+      'Dear ' + recipientName + ',\n\n' +
+      'The IT Unit has completed its technical assessment for the following IT Job Request and is requesting your approval to proceed.\n\n' +
+      'JRF #:          ' + jrfNo                              + '\n' +
+      'Requester:      ' + ticket.name + ' — ' + ticket.position + '\n' +
+      'Assigned Staff: ' + (ticket.assignedStaff || 'TBA')    + '\n' +
+      'Target Date:    ' + (ticket.targetDate    || 'TBA')    + '\n' +
+      'Recommendation: ' + (ticket.recommendation || '—')     + '\n\n' +
+      'PROBLEM DESCRIPTION\n' + ticket.problem                + '\n\n' +
+      'TECHNICAL ASSESSMENT\n' + (ticket.assessment || '—')   + '\n\n' +
+      'APPROVE: ' + approveUrl + '\n' +
+      'REJECT:  ' + rejectUrl  + '\n\n' +
+      'Each link can only be used once and expires in 7 days.\n— PSHS ZRC IT Unit';
+  }
+
+  GmailApp.sendEmail(recipientEmail, subject, plainBody, { htmlBody: htmlBody });
   Logger.log('Approval email sent (' + type + ') to ' + recipientEmail + ' for JRF ' + jrfNo);
 }
 

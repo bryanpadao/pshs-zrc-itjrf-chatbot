@@ -67,7 +67,11 @@
 
     body {
       font-family: 'Inter', sans-serif;
-      background: var(--bg-base);
+      background-color: var(--bg-base);
+      background-image: url('https://drive.google.com/thumbnail?id=1YYOXIIiN3t3uY6SjbcwolH2zFOo_4PLE&sz=w1920');
+      background-size: cover;
+      background-position: center;
+      background-attachment: fixed;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
@@ -470,6 +474,7 @@
       <div class="topbar-avatar" id="topbar-initials">IT</div>
       <div class="topbar-name" id="topbar-name-display"></div>
     </div>
+    <span id="theme-label" style="font-size:11px;color:var(--text-muted);cursor:pointer;user-select:none;" onclick="document.getElementById('theme-toggle').click()">Dark mode</span>
     <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark mode"><span id="theme-icon">☀</span></button>
     <button class="btn-refresh" onclick="loadTickets()">⟳ Refresh</button>
     <button class="btn-signout" onclick="logout()">Sign out</button>
@@ -1570,6 +1575,8 @@
     function update() {
       var isLight = document.documentElement.classList.contains('light-mode');
       if (icon) icon.textContent = isLight ? '🌙' : '☀️';
+      var label = document.getElementById('theme-label');
+      if (label) label.textContent = isLight ? 'Light mode' : 'Dark mode';
     }
     update();
     if (btn) {

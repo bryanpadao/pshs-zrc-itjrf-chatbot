@@ -415,7 +415,7 @@ Called after name confirmation (yes path) and after manual department entry. Alw
 - **`archiveOldTickets()`** — moves Completed/Rejected tickets older than 90 days to Archive sheet; set as monthly trigger (1st of month 3:00–4:00 AM)
 
 ### Approval functions
-- **`sendApprovalEmail(type, jrfNo, ticket)`** — generates UUID token, stores in Approvals sheet (cols A–E, col E = Created ISO timestamp), emails supervisor or director with one-time approve/reject links
+- **`sendApprovalEmail(type, jrfNo, ticket)`** — generates UUID token, stores in Approvals sheet (cols A–E, col E = Created ISO timestamp), sends HTML approval email via `GmailApp.sendEmail()` with plain-text fallback. HTML layout: dark navy header (`#1a3c6e`), alternating detail table rows, navy left-border problem block, gold left-border assessment block (director email only), styled Approve/Reject buttons. Subject: `[PSHS ZRC] IT Job Request #${jrfNo} — Awaiting your approval`. Full department name resolved via `lookupDepartment(ticket.department).fullName` (e.g. `"SSD"` → `"Student Services Division"`). Recipient: `ticket.supervisorEmail` (supervisor) or `DIRECTOR_EMAIL` (director). Token storage logic unchanged.
 - **`handleApproval(token, action)`** — validates token; checks 7-day expiry against col E (Created); updates ticket status; notifies IT staff
 - **`approvalHtmlPage(title, message)`** — returns styled HTML response for approval link clicks
 - **`getStaffEmail(name)`** — looks up email from optional `Staff` sheet by name

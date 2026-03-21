@@ -44,6 +44,9 @@
       --radius-lg:  14px;
       --radius-md:  10px;
       --radius-sm:  7px;
+      /* CCTV warning text — changes between modes */
+      --cctv-title: #e8a030;
+      --cctv-check: #c8912a;
     }
 
     /* ── Light mode overrides (DESIGN.md §7-A) ──────────────────────────────── */
@@ -65,6 +68,12 @@
     html.light-mode .sidebar,
     html.light-mode .my-tickets-panel-header { background: #dde5ef; }
 
+    /* CCTV warning text is darker in light mode for contrast */
+    html.light-mode {
+      --cctv-title: #7a4800;
+      --cctv-check: #6b3d00;
+    }
+
     /* Fix the online-dot border colour (it hardcodes the sidebar bg) */
     html.light-mode .id-bar-avatar::after { border-color: #dde5ef; }
 
@@ -85,7 +94,11 @@
 
     body {
       font-family: 'Inter', sans-serif;
-      background: var(--bg-base);
+      background-color: var(--bg-base);
+      background-image: url('https://drive.google.com/thumbnail?id=1YYOXIIiN3t3uY6SjbcwolH2zFOo_4PLE&sz=w1920');
+      background-size: cover;
+      background-position: center;
+      background-attachment: fixed;
       display: flex;
       justify-content: center;
       align-items: center;
@@ -672,7 +685,8 @@
       padding: 12px 14px;
     }
 
-    .cctv-warning-title { font-size: 12px; font-weight: 600; color: #e8a030; margin-bottom: 5px; }
+    .cctv-warning-title { font-size: 12px; font-weight: 600; color: var(--cctv-title); margin-bottom: 5px; }
+    .cctv-warning-body  { font-size: 12px; color: var(--text-sec); line-height: 1.5; }
 
     .cctv-checkbox-label {
       display: flex;
@@ -680,7 +694,7 @@
       gap: 9px;
       margin-top: 10px;
       font-size: 11px;
-      color: #c8912a;
+      color: var(--cctv-check);
       cursor: pointer;
       line-height: 1.5;
     }
@@ -875,7 +889,7 @@
         <img class="logo-img" src="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w200" alt="PSHS ZRC Logo">
         <div>
           <div class="logo-name">IT Help Desk</div>
-          <div class="logo-sub">PSHS Zamboanga Peninsula</div>
+          <div class="logo-sub">PSHS-ZRC</div>
         </div>
       </div>
 
@@ -891,10 +905,11 @@
       <!-- User card — shown after identity resolves -->
       <div class="sidebar-bottom">
         <!-- Theme toggle sits above the user card -->
-        <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
           <button class="btn-theme-toggle" id="theme-toggle" title="Toggle light/dark mode">
             <span id="theme-icon">☀️</span>
           </button>
+          <span id="theme-label" style="font-size:11px;color:var(--text-muted);cursor:pointer;user-select:none;" onclick="document.getElementById('theme-toggle').click()">Dark mode</span>
         </div>
         <div id="identity-bar">
           <div class="id-bar-avatar" id="id-bar-avatar">?</div>
@@ -1191,10 +1206,11 @@
 
         // Show intro only if the chat is empty (first click in this session)
         if (messagesEl.children.length === 0) {
+          var firstName = (currentUser && currentUser.name) ? currentUser.name.trim().split(/\s+/)[0] : '';
           if (key === 'it_issue') {
-            addMessage('Sure! Please describe the IT issue you\'re experiencing and I\'ll help troubleshoot.', 'bot');
+            addMessage('Hello' + (firstName ? ', ' + firstName : '') + '! Please describe the IT issue you\'re experiencing and I\'ll help troubleshoot.', 'bot');
           } else {
-            addMessage('Sure! What would you like to know?', 'bot');
+            addMessage('Hello' + (firstName ? ', ' + firstName : '') + '! What would you like to know?', 'bot');
           }
         }
         if (dsBar) dsBar.style.display = key === 'it_issue' ? 'block' : 'none';
@@ -1495,7 +1511,7 @@
       const cctvHtml = type === 'cctv'
         ? '<div class="cctv-warning">' +
             '<div class="cctv-warning-title">⚠️ Data Privacy Act requirement</div>' +
-            '<div>You must have a formal letter addressed to the Campus Director containing the ' +
+            '<div class="cctv-warning-body">You must have a formal letter addressed to the Campus Director containing the ' +
             'exact date, time range, camera location, and reason. The Director must approve before IT can proceed.</div>' +
             '<label class="cctv-checkbox-label">' +
               '<input type="checkbox" id="cctv-letter-checkbox" onchange="updateFormSubmitState()">' +
@@ -1692,6 +1708,8 @@
       function update() {
         var isLight = document.documentElement.classList.contains('light-mode');
         if (icon) icon.textContent = isLight ? '🌙' : '☀️';
+        var label = document.getElementById('theme-label');
+        if (label) label.textContent = isLight ? 'Light mode' : 'Dark mode';
       }
       update();
       if (btn) {
