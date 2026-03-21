@@ -348,8 +348,8 @@ function handleChat(message, session) {
     'I think your cat may have walked across the keyboard one too many times. 🐱 Let\'s start fresh — begin a new conversation when you\'re ready!',
   ];
   if (isGibberish(message)) {
-    session.nonsenseCount = (session.nonsenseCount || 0) + 1;
-    if (session.nonsenseCount >= 3) {
+    session.strikeCount = (session.strikeCount || 0) + 1;
+    if (session.strikeCount >= 3) {
       const joke = NONSENSE_JOKES[Math.floor(Math.random() * NONSENSE_JOKES.length)];
       return { reply: joke, session: {}, submitted: true };
     }
@@ -357,7 +357,7 @@ function handleChat(message, session) {
       'That doesn\'t look like a valid message. Could you describe your IT issue in plain text?',
       'Hmm, that still doesn\'t look right. One more like that and I\'ll have to give up on us! 😅',
     ];
-    return { reply: warnings[session.nonsenseCount - 1], session };
+    return { reply: warnings[session.strikeCount - 1], session };
   }
 
   // 1. RAG: fetch KB context relevant to the message
@@ -391,11 +391,10 @@ function handleChat(message, session) {
       const rawDesc    = buildDescriptionFromHistory(session) || prefillDesc;
 
       // Guard: reject filing if there is no real IT context in the conversation.
-      // Uses the same nonsenseCount as gibberish — any mix of gibberish + unrelated
-      // inputs counts toward the shared 3-strike limit.
+      // Any mix of gibberish + unrelated inputs counts toward the shared 3-strike limit.
       if (!hasEnoughContext(rawDesc)) {
-        session.nonsenseCount = (session.nonsenseCount || 0) + 1;
-        if (session.nonsenseCount >= 3) {
+        session.strikeCount = (session.strikeCount || 0) + 1;
+        if (session.strikeCount >= 3) {
           const joke = NONSENSE_JOKES[Math.floor(Math.random() * NONSENSE_JOKES.length)];
           return { reply: joke, session: {}, submitted: true };
         }
@@ -406,12 +405,12 @@ function handleChat(message, session) {
           'I still need some IT-related details to file a request. ' +
           'What device or system is having a problem, and what exactly is happening?',
         ];
-        const clarifyReply = clarifyPrompts[session.nonsenseCount - 1];
+        const clarifyReply = clarifyPrompts[session.strikeCount - 1];
         session.history = appendHistory(session.history, message, clarifyReply);
         return { reply: clarifyReply, session };
       }
-      // Reset nonsense counter once valid IT context is confirmed
-      session.nonsenseCount = 0;
+      // Reset strike counter once valid IT context is confirmed
+      session.strikeCount = 0;
 
       const formalDesc = paraphraseDescription(rawDesc);
 
@@ -469,8 +468,8 @@ function handleChat(message, session) {
     return { reply: combined, replies, session };
   }
 
-  // Normal reply — message was legitimate, reset the nonsense counter
-  session.nonsenseCount = 0;
+  // Normal reply — message was legitimate, reset the strike counter
+  session.strikeCount = 0;
   session.history = appendHistory(session.history, message, geminiReply);
   return { reply: geminiReply, session };
 }
@@ -529,8 +528,8 @@ function handleFormStep(message, session) {
     supervisor: 'immediate supervisor',
   };
   if (STEP_LABELS[step.key] && isGibberish(message)) {
-    session.gibberishCount = (session.gibberishCount || 0) + 1;
-    if (session.gibberishCount >= 3) {
+    session.strikeCount = (session.strikeCount || 0) + 1;
+    if (session.strikeCount >= 3) {
       // End the conversation with a joke after 3 consecutive gibberish inputs
       const joke = GIBBERISH_JOKES[Math.floor(Math.random() * GIBBERISH_JOKES.length)];
       return { reply: joke, session: {}, submitted: true };
@@ -540,10 +539,10 @@ function handleFormStep(message, session) {
       'That doesn\'t look like a valid ' + label + '. Could you please try again?\n\n' + step.prompt,
       'Hmm, that still doesn\'t look right. One more like that and I\'ll have to give up on us! 😅\n\n' + step.prompt,
     ];
-    return { reply: warnings[session.gibberishCount - 1], session };
+    return { reply: warnings[session.strikeCount - 1], session };
   }
-  // Reset gibberish counter once the user types something valid
-  session.gibberishCount = 0;
+  // Reset strike counter once the user types something valid
+  session.strikeCount = 0;
 
   // Validate recommendation type (must be 1–10 or exact name)
   if (step.key === 'rec_type') {
@@ -1398,13 +1397,13 @@ function submitFormTicket(params) {
       }
     }
 
-    // 5. Context check — return error cleanly; do NOT use strikeCount (form ≠ chat)
+    // 5. Validate description — the 8-word minimum on the form is sufficient for
+    //    structured form submissions. hasEnoughContext() is skipped here because its
+    //    Gemini prompt is tuned for IT-repair chat (device/system/what happened) and
+    //    will incorrectly reject valid publication/design/technical/CCTV requests.
     const rawDesc = sanitizeInput(params.description || '');
     if (!rawDesc) {
       return { error: 'no_description', message: 'Please enter a description.' };
-    }
-    if (!hasEnoughContext(rawDesc)) {
-      return { error: 'insufficient_context', message: 'Please add more detail to your description before submitting.' };
     }
 
     // 6. Build description with label prefix, then formally paraphrase

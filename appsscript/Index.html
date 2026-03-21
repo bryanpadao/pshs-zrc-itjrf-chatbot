@@ -5,172 +5,299 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <!-- Prevent iOS from auto-linking phone numbers, addresses, dates in chat bubbles -->
   <meta name="format-detection" content="telephone=no, date=no, address=no, email=no, url=no">
-  <title>PSHS-ZRC IT Support</title>
+  <title>PSHS-ZRC IT Help Desk</title>
   <link rel="icon" type="image/png" href="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w64">
+  <!-- Apply saved theme before first paint to prevent flash of wrong theme (DESIGN.md §7-C) -->
+  <script>
+    (function() {
+      if (localStorage.getItem('pshs_theme') === 'light') {
+        document.documentElement.classList.add('light-mode');
+      }
+    })();
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
     html, body { height: 100%; }
 
+    /* ── Design-system variables (DESIGN.md) ────────────────────────────────── */
+    :root {
+      --bg-base:    #0f1923;
+      --bg-card:    #18232f;
+      --bg-panel:   #1e2d3d;
+      --bg-input:   #243447;
+      --bg-hover:   #243040;
+      --navy:       #1a3c6e;
+      --navy-mid:   #1e4a8a;
+      --navy-light: #2a5faa;
+      --gold:       #c9a84c;
+      --green:      #1D9E75;
+      --red:        #e24b4a;
+      --amber:      #d4860f;
+      --purple:     #7c5cbc;
+      --border:     rgba(255,255,255,0.07);
+      --border-mid: rgba(255,255,255,0.12);
+      --text-pri:   #e8edf2;
+      --text-sec:   #8ba3bc;
+      --text-muted: #5a7490;
+      --radius-lg:  14px;
+      --radius-md:  10px;
+      --radius-sm:  7px;
+    }
+
+    /* ── Light mode overrides (DESIGN.md §7-A) ──────────────────────────────── */
+
+    html.light-mode {
+      --bg-base:    #f0f4f8;
+      --bg-card:    #ffffff;
+      --bg-panel:   #e8edf3;
+      --bg-input:   #f5f7fa;
+      --bg-hover:   #e0e7ef;
+      --border:     rgba(0,0,0,0.08);
+      --border-mid: rgba(0,0,0,0.14);
+      --text-pri:   #1a2b3c;
+      --text-sec:   #3d5a73;
+      --text-muted: #7a9ab0;
+    }
+
+    /* Surfaces hardcoded to #131e2a must be explicitly overridden */
+    html.light-mode .sidebar,
+    html.light-mode .my-tickets-panel-header { background: #dde5ef; }
+
+    /* Fix the online-dot border colour (it hardcodes the sidebar bg) */
+    html.light-mode .id-bar-avatar::after { border-color: #dde5ef; }
+
+    /* ── Theme toggle button (DESIGN.md §7-B) ────────────────────────────────── */
+
+    .btn-theme-toggle {
+      background: transparent;
+      border: 1px solid var(--border-mid);
+      border-radius: 6px;
+      width: 30px; height: 30px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px; cursor: pointer;
+      transition: border-color 0.15s;
+      flex-shrink: 0;
+    }
+
+    .btn-theme-toggle:hover { border-color: var(--gold); }
+
     body {
-      font-family: -apple-system, 'Segoe UI', Arial, sans-serif;
-      background: #1a3c6e;
+      font-family: 'Inter', sans-serif;
+      background: var(--bg-base);
       display: flex;
       justify-content: center;
-      align-items: flex-start;
+      align-items: center;
       min-height: 100%;
+      padding: 24px;
     }
 
-    /* Full-viewport background — only visible on desktop around the card */
-    body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      z-index: -1;
-      background: url('https://drive.google.com/thumbnail?id=1kz4OlKY9jpt_qWtP8aC1BrjLXBhiWcmb&sz=w1920') center/cover no-repeat;
+    /* ── Shell — two-column card ─────────────────────────────────────────────── */
+
+    .shell {
+      display: flex;
+      width: 100%;
+      max-width: 1160px;
+      height: calc(100vh - 48px);
+      min-height: 600px;
+      background: var(--bg-card);
+      border-radius: 20px;
+      overflow: hidden;
+      box-shadow: 0 32px 80px rgba(0,0,0,0.55), 0 0 0 1px var(--border);
     }
 
-    /* ── Chat container — mobile first ──────────────────────────────────────── */
+    /* ── Sidebar ──────────────────────────────────────────────────────────────── */
 
-    /* On mobile: use fixed positioning for true full-screen coverage */
-    .chat-container {
-      position: fixed;
-      inset: 0;
-      background: #f0f4fa;
+    .sidebar {
+      width: 280px;
+      flex-shrink: 0;
+      background: #131e2a;
+      border-right: 1px solid var(--border);
       display: flex;
       flex-direction: column;
+      padding: 20px 0 16px;
       overflow: hidden;
     }
 
-    /* On wide screens: float as a centered card */
-    @media (min-width: 900px) {
-      body { align-items: center; padding: 24px 0; }
-      .chat-container {
-        position: relative;
-        inset: auto;
-        width: 560px;
-        height: calc(100dvh - 48px);
-        border-radius: 14px;
-        box-shadow: 0 6px 32px rgba(0,0,0,0.28);
-      }
-    }
-
-    /* ── Header — navy bar with ZRC text avatar ────────────────────────────── */
-
-    .chat-header {
-      background: #1a3c6e;
-      padding: 12px 16px;
+    .sidebar-logo {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
+      padding: 0 16px 20px;
+      border-bottom: 1px solid var(--border);
       flex-shrink: 0;
     }
 
-    /* Logo avatar circle */
-    .header-avatar {
-      width: 44px;
-      height: 44px;
-      border-radius: 50%;
-      background: #fff;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+    .logo-img { width: 36px; height: 36px; object-fit: contain; flex-shrink: 0; }
+    .logo-name { font-size: 14px; font-weight: 700; color: var(--text-pri); }
+    .logo-sub  { font-size: 9px; color: var(--text-muted); letter-spacing: 0.5px; text-transform: uppercase; margin-top: 1px; }
+
+    /* Section label above ticket list */
+    .sidebar-section-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      padding: 16px 16px 8px;
       flex-shrink: 0;
+    }
+
+    /* ── Sidebar ticket list ──────────────────────────────────────────────────── */
+
+    #ticket-strip {
+      display: none;   /* shown via JS when user has tickets */
+      flex-direction: column;
+      flex: 1;
       overflow: hidden;
-      border: 2px solid #c9a84c;
+      min-height: 0;
     }
 
-    .header-avatar img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
+    #ticket-strip-items {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 10px;
     }
 
-    .header-text { flex: 1; }
-
-    .header-name {
-      font-size: 16px;
-      font-weight: 700;
-      color: #fff;
-      line-height: 1.2;
+    .sidebar-ticket-item {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s;
     }
 
-    .header-status {
+    .sidebar-ticket-item:hover { border-color: var(--border-mid); }
+
+    .sidebar-ticket-id {
+      font-size: 10px;
+      color: var(--text-muted);
+      font-weight: 500;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .sidebar-ticket-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .dot-pending  { background: var(--amber); }
+    .dot-progress { background: #3b82f6; box-shadow: 0 0 5px #3b82f6; }
+    .dot-done     { background: var(--green); }
+    .dot-rejected { background: var(--red); }
+
+    .sidebar-ticket-title {
       font-size: 12px;
-      color: rgba(255,255,255,0.72);
-      margin-top: 1px;
+      font-weight: 500;
+      color: var(--text-pri);
+      line-height: 1.4;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
-    /* Green online indicator */
-    .header-dot {
-      width: 9px;
-      height: 9px;
-      border-radius: 50%;
-      background: #1D9E75;
-      flex-shrink: 0;
-      box-shadow: 0 0 0 2px #1a3c6e;
+    .sidebar-ticket-status { font-size: 10px; color: var(--text-muted); margin-top: 3px; }
+
+    .ticket-strip-toggle {
+      font-size: 11px;
+      color: var(--navy-light);
+      cursor: pointer;
+      display: block;
+      background: none;
+      border: none;
+      padding: 6px 10px 10px;
+      font-family: 'Inter', sans-serif;
+      text-align: center;
+      width: 100%;
+      transition: color 0.15s;
     }
 
-    /* ── Identity bar — shown after identity resolves ────────────────────────── */
+    .ticket-strip-toggle:hover { color: var(--text-pri); }
+
+    /* ── Sidebar user card (bottom) ───────────────────────────────────────────── */
+
+    .sidebar-bottom { padding: 0 12px; flex-shrink: 0; }
 
     #identity-bar {
       display: none;   /* becomes flex after identity resolves */
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 13px;
       align-items: center;
       gap: 10px;
-      background: #fff;
-      border-bottom: 1px solid #d4dce8;
-      padding: 8px 14px;
-      flex-shrink: 0;
     }
 
-    /* Initials avatar */
     .id-bar-avatar {
-      width: 34px;
-      height: 34px;
+      width: 36px;
+      height: 36px;
       border-radius: 50%;
-      background: #1a3c6e;
+      background: var(--navy);
+      border: 2px solid var(--navy-light);
       color: #fff;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
       display: flex;
       align-items: center;
       justify-content: center;
       flex-shrink: 0;
+      position: relative;
+    }
+
+    /* Green online dot on avatar */
+    .id-bar-avatar::after {
+      content: '';
+      position: absolute;
+      bottom: 0; right: 0;
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      background: var(--green);
+      border: 2px solid #131e2a;
     }
 
     .id-bar-info { flex: 1; min-width: 0; }
 
     .id-bar-name {
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 600;
-      color: #1a1a1a;
+      color: var(--text-pri);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
 
     .id-bar-sub {
-      font-size: 11px;
-      color: #6b7a96;
+      font-size: 10px;
+      color: var(--text-muted);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      margin-top: 1px;
     }
 
-    /* "✓ Verified" badge */
+    /* Plain green "✓ Verified" text — no background pill */
     .id-bar-badge {
       font-size: 11px;
       font-weight: 600;
-      color: #1D9E75;
-      background: #e8f8f3;
-      border: 1px solid #b3e8d5;
-      border-radius: 10px;
-      padding: 2px 8px;
-      flex-shrink: 0;
+      color: var(--green);
       white-space: nowrap;
+      flex-shrink: 0;
     }
 
-    /* ── Loading state — shown by default while identity resolves ─────────────── */
+    /* ── Main panel ───────────────────────────────────────────────────────────── */
+
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* ── Loading state ─────────────────────────────────────────────────────────── */
 
     #loading-state {
       display: flex;
@@ -179,23 +306,23 @@
       align-items: center;
       justify-content: center;
       gap: 14px;
-      background: #f0f4fa;
+      background: var(--bg-card);
     }
 
     .spinner {
-      width: 36px;
-      height: 36px;
-      border: 3px solid #d4dce8;
-      border-top-color: #1a3c6e;
+      width: 30px;
+      height: 30px;
+      border: 3px solid var(--border-mid);
+      border-top-color: var(--navy-light);
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
     }
 
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    .loading-text { font-size: 13px; color: #6b7a96; }
+    .loading-text { font-size: 13px; color: var(--text-muted); }
 
-    /* ── Main content — hidden until identity resolves ───────────────────────── */
+    /* ── Main content — service grid + chat ──────────────────────────────────── */
 
     #main-content {
       display: none;   /* becomes flex after identity resolves */
@@ -204,149 +331,90 @@
       overflow: hidden;
     }
 
-    /* ── Ticket status strip — shown only if there are new updates ───────────── */
-
-    #ticket-strip {
-      display: none;   /* shown via JS when updates exist */
-      background: #fff;
-      border-bottom: 1px solid #d4dce8;
-      padding: 8px 14px;
-      flex-shrink: 0;
-    }
-
-    .ticket-strip-label {
-      font-size: 11px;
-      font-weight: 600;
-      color: #6b7a96;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-bottom: 6px;
-    }
-
-    .ticket-strip-items {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .ticket-strip-item {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 12px;
-      color: #333;
-    }
-
-    .ts-jrf { color: #6b7a96; flex-shrink: 0; }
-
-    .ts-problem {
-      flex: 1;
-      min-width: 0;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    /* Status pills */
-    .ts-pill {
-      flex-shrink: 0;
-      font-size: 10px;
-      font-weight: 600;
-      border-radius: 8px;
-      padding: 2px 7px;
-      white-space: nowrap;
-    }
-
-    .ts-pill.status-pending  { background: #fff3cd; color: #856404; }
-    .ts-pill.status-progress { background: #d1ecf1; color: #0c5460; }
-    .ts-pill.status-done     { background: #d4edda; color: #155724; }
-    .ts-pill.status-rejected { background: #f8d7da; color: #721c24; }
-
-    /* "View all" toggle link at bottom of strip */
-    .ticket-strip-toggle {
-      font-size: 11px;
-      color: #1a3c6e;
-      cursor: pointer;
-      margin-top: 4px;
-      display: inline-block;
-      background: none;
-      border: none;
-      padding: 0;
-      font-family: inherit;
-      text-decoration: underline;
-    }
-
-    /* ── Quick-start grid — 2×2 buttons ──────────────────────────────────────── */
+    /* ── Service card grid ────────────────────────────────────────────────────── */
 
     .qs-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      padding: 12px 12px 0;
+      gap: 10px;
+      padding: 20px 20px 0;
       flex-shrink: 0;
     }
 
     .qs-btn {
-      background: #fff;
-      border: 1.5px solid #d4dce8;
-      border-radius: 12px;
-      padding: 12px 10px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 16px 14px;
       cursor: pointer;
       text-align: left;
       transition: border-color 0.15s, background 0.15s;
-      touch-action: manipulation;
       display: flex;
       flex-direction: column;
-      gap: 3px;
+      font-family: 'Inter', sans-serif;
     }
 
-    .qs-btn:hover  { border-color: #1a3c6e; background: #f7f9ff; }
-    .qs-btn.active { border-color: #1a3c6e; background: #eef2fa; }
+    .qs-btn:hover  { border-color: var(--border-mid); background: var(--bg-hover); }
+    .qs-btn.active { background: rgba(26,60,110,0.25); border-color: var(--navy-light); border-width: 1.5px; }
 
-    .qs-icon  { font-size: 20px; line-height: 1; }
-    .qs-label { font-size: 13px; font-weight: 600; color: #1a1a1a; }
-    .qs-sub   { font-size: 11px; color: #6b7a96; }
+    .qs-icon-wrap {
+      width: 40px; height: 40px;
+      border-radius: var(--radius-sm);
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 10px;
+      font-size: 20px;
+    }
 
-    /* ── Direct-submit shortcut — shown during IT Issue chat flow ───────────── */
+    .qs-btn[data-type="it_issue"]    .qs-icon-wrap { background: rgba(26,60,110,0.5);  border: 1px solid rgba(42,95,170,0.4); }
+    .qs-btn[data-type="publication"] .qs-icon-wrap { background: rgba(20,80,60,0.5);   border: 1px solid rgba(29,158,117,0.3); }
+    .qs-btn[data-type="cctv"]        .qs-icon-wrap { background: rgba(120,70,10,0.5);  border: 1px solid rgba(212,134,15,0.3); }
+    .qs-btn[data-type="technical"]   .qs-icon-wrap { background: rgba(80,50,130,0.5);  border: 1px solid rgba(120,80,200,0.3); }
+
+    .qs-label { font-size: 12px; font-weight: 600; color: var(--text-pri); line-height: 1.3; }
+    .qs-sub   { font-size: 10px; color: var(--text-muted); margin-top: 3px; }
+
+    /* ── Direct-submit shortcut ───────────────────────────────────────────────── */
 
     #direct-submit-bar {
-      display: none;   /* shown via JS when IT Issue flow is active */
-      padding: 6px 12px 0;
+      display: none;
+      padding: 10px 20px 0;
       flex-shrink: 0;
-      text-align: center;
     }
 
     #direct-submit-bar button {
-      background: #fff8e1;
-      border: 1.5px solid #c9a84c;
-      border-radius: 16px;
-      padding: 6px 16px;
-      font-size: 12px;
-      color: #7a5c00;
+      background: transparent;
+      border: 1px solid var(--border-mid);
+      border-radius: 40px;
+      padding: 8px 18px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-sec);
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      font-family: 'Inter', sans-serif;
       cursor: pointer;
-      font-family: inherit;
-      transition: background 0.15s;
-      touch-action: manipulation;
+      transition: border-color 0.15s, color 0.15s;
     }
 
-    #direct-submit-bar button:hover { background: #fff0c0; }
+    #direct-submit-bar button:hover { border-color: var(--gold); color: var(--gold); }
 
-    /* ── Chat area separator ──────────────────────────────────────────────────── */
+    /* ── Chat separator ───────────────────────────────────────────────────────── */
 
     .chat-area-sep {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 6px 14px 0;
+      gap: 10px;
+      padding: 10px 20px 0;
       flex-shrink: 0;
     }
 
     .chat-area-sep span {
-      font-size: 11px;
-      color: #6b7a96;
-      white-space: nowrap;
+      font-size: 10px;
+      color: var(--text-muted);
       text-transform: uppercase;
-      letter-spacing: 0.4px;
+      letter-spacing: 0.6px;
+      font-weight: 600;
+      white-space: nowrap;
     }
 
     .chat-area-sep::before,
@@ -354,14 +422,14 @@
       content: '';
       flex: 1;
       height: 1px;
-      background: #d4dce8;
+      background: var(--border);
     }
 
-    /* ── Messages area ───────────────────────────────────────────────────────── */
+    /* ── Messages area ────────────────────────────────────────────────────────── */
 
     .chat-messages {
       flex: 1;
-      padding: 10px 12px 8px;
+      padding: 12px 20px 8px;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
@@ -369,391 +437,268 @@
       -webkit-overflow-scrolling: touch;
     }
 
-    /* Row wrapper — used for bot messages to place avatar + bubble side by side */
-    .msg-row {
-      display: flex;
-      align-items: flex-end;
-      gap: 6px;
-    }
+    .msg-row { display: flex; align-items: flex-end; gap: 8px; }
+    .msg-row.bot-row { align-self: flex-start; max-width: 86%; }
 
-    .msg-row.bot-row { align-self: flex-start; max-width: 90%; }
-
-    /* Small text avatar beside bot bubbles ("IT") */
     .bot-avatar {
-      width: 24px;
-      height: 24px;
+      width: 28px; height: 28px;
       border-radius: 50%;
-      background: #1a3c6e;
+      background: var(--navy);
+      border: 1px solid var(--navy-light);
       color: #fff;
-      font-size: 8px;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      font-size: 8px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
       flex-shrink: 0;
     }
 
-    /* Bubble base */
     .message {
-      padding: 10px 14px;
-      border-radius: 18px;
-      font-size: 14px;
-      line-height: 1.5;
+      padding: 11px 14px;
+      border-radius: 14px;
+      font-size: 13px;
+      line-height: 1.6;
       white-space: pre-wrap;
       overflow-wrap: break-word;
       word-break: normal;
+      font-family: 'Inter', sans-serif;
     }
 
-    /* Bot bubble — white with subtle border */
     .message.bot {
-      background: #fff;
-      color: #1a1a1a !important;
-      border-bottom-left-radius: 4px;
-      border: 1px solid #e8ecf4;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-top-left-radius: 3px;
+      color: var(--text-pri);
     }
 
-    /* Prevent browser auto-link detection from coloring bot text blue */
-    .message.bot a,
-    .message.bot * {
-      color: #1a1a1a !important;
+    .message.bot a, .message.bot * {
+      color: var(--text-pri) !important;
       text-decoration: none !important;
       pointer-events: none;
     }
 
-    /* User bubble — PSHS navy */
     .message.user {
-      background: #1a3c6e;
+      background: var(--navy);
+      border: 1px solid var(--navy-light);
+      border-top-right-radius: 3px;
       color: #fff;
       align-self: flex-end;
-      border-bottom-right-radius: 4px;
-      max-width: 84%;
+      max-width: 78%;
     }
 
-    .message.user a {
-      color: #fff;
-      text-decoration: none;
-      pointer-events: none;
-    }
+    .message.user a { color: #fff; text-decoration: none; pointer-events: none; }
 
-    /* ── KB card — gold-accented card for numbered troubleshooting steps ─────── */
+    /* ── Typing indicator ─────────────────────────────────────────────────────── */
 
-    .kb-card {
-      background: #fff;
-      border: 1px solid #d4dce8;
-      border-left: 3px solid #c9a84c;
-      border-radius: 10px;
-      padding: 12px 14px;
-      font-size: 13px;
-      color: #1a1a1a;
-      line-height: 1.6;
-      white-space: pre-wrap;
-      overflow-wrap: break-word;
-      max-width: 90%;
-      align-self: flex-start;
-    }
-
-    /* ── Typing indicator ────────────────────────────────────────────────────── */
-
-    .typing-row {
-      display: flex;
-      align-items: flex-end;
-      gap: 6px;
-      align-self: flex-start;
-    }
+    .typing-row { display: flex; align-items: flex-end; gap: 8px; align-self: flex-start; }
 
     .typing {
-      display: flex;
-      gap: 4px;
+      display: flex; gap: 5px;
       padding: 12px 14px;
-      background: #fff;
-      border-radius: 18px;
-      border-bottom-left-radius: 4px;
-      border: 1px solid #e8ecf4;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      border-top-left-radius: 3px;
       width: fit-content;
     }
 
     .typing span {
       width: 7px; height: 7px;
-      background: #8e8e93;
+      background: var(--text-muted);
       border-radius: 50%;
-      animation: bounce 1.2s infinite;
+      animation: typingPulse 1.2s ease-in-out infinite;
     }
 
     .typing span:nth-child(2) { animation-delay: 0.2s; }
     .typing span:nth-child(3) { animation-delay: 0.4s; }
 
-    @keyframes bounce {
-      0%, 80%, 100% { transform: translateY(0); }
-      40%           { transform: translateY(-5px); }
+    @keyframes typingPulse {
+      0%, 60%, 100% { opacity: 0.3; transform: scale(0.8); }
+      30%           { opacity: 1;   transform: scale(1); }
     }
 
-    /* ── My Tickets overlay panel ────────────────────────────────────────────── */
+    /* ── Chat input bar ───────────────────────────────────────────────────────── */
 
-    .my-tickets-panel {
-      position: absolute;
-      inset: 0;
-      background: #f0f4fa;
-      z-index: 10;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-
-    .my-tickets-panel-header {
-      background: #1a3c6e;
-      color: #fff;
-      padding: 14px 16px;
-      display: flex;
+    #chat-input {
+      display: none;   /* shown only when IT Issue is active */
       align-items: center;
-      justify-content: space-between;
-      font-weight: 600;
-      flex-shrink: 0;
-    }
-
-    .my-tickets-panel-header button {
-      background: transparent;
-      border: 1.5px solid rgba(255,255,255,0.5);
-      color: #fff;
-      padding: 4px 12px;
+      gap: 10px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-mid);
       border-radius: 14px;
-      cursor: pointer;
-      font-size: 13px;
-      font-family: inherit;
-    }
-
-    .my-tickets-list { flex: 1; overflow-y: auto; padding: 12px; }
-
-    .ticket-item {
-      background: #fff;
-      border-radius: 10px;
-      padding: 12px 14px;
-      margin-bottom: 10px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
-      cursor: pointer;
-    }
-
-    .ticket-item:hover { background: #f7f8ff; }
-    .ticket-item .ti-jrf     { font-size: 11px; color: #888; }
-    .ticket-item .ti-problem { font-size: 14px; font-weight: 500; color: #1a1a1a; margin: 2px 0 6px; }
-    .ticket-item .ti-status  { font-size: 12px; color: #1a3c6e; }
-
-    .ticket-detail {
-      background: #fff;
-      border-radius: 10px;
-      padding: 14px 16px;
-      margin-bottom: 10px;
-    }
-
-    .ticket-detail p { font-size: 13px; line-height: 1.6; color: #333; }
-
-    .ticket-detail .back-btn {
-      font-size: 12px;
-      color: #1a3c6e;
-      cursor: pointer;
-      text-decoration: underline;
-      margin-bottom: 8px;
-      display: inline-block;
-      background: none;
-      border: none;
-      padding: 0;
-      font-family: inherit;
-    }
-
-    /* ── Input bar — iMessage style ──────────────────────────────────────────── */
-
-    .chat-input {
-      display: flex;
-      align-items: flex-end;
-      padding: 10px 12px;
-      padding-bottom: max(10px, env(safe-area-inset-bottom));
-      background: #fff;
-      border-top: 1px solid #d4dce8;
-      gap: 8px;
+      padding: 10px 14px;
+      margin: 8px 20px max(16px, env(safe-area-inset-bottom));
       flex-shrink: 0;
     }
 
-    .chat-input textarea {
+    #chat-input textarea {
       flex: 1;
-      resize: none;
-      border: 1.5px solid #d4dce8;
-      border-radius: 20px;
-      padding: 10px 16px;
-      font-size: 16px;    /* 16px prevents iOS auto-zoom on focus */
-      font-family: inherit;
-      outline: none;
-      min-height: 40px;
-      max-height: 120px;
-      overflow-y: hidden;  /* JS enables scroll only when content exceeds max-height */
-      line-height: 1.4;
-      background: #f0f4fa;
-      color: #1a1a1a;
-      transition: border-color 0.15s;
-    }
-
-    .chat-input textarea:focus { border-color: #1a3c6e; background: #fff; }
-
-    /* Send button — circle */
-    .chat-input button {
-      background: #1a3c6e;
-      color: #fff;
+      background: transparent;
       border: none;
-      border-radius: 50%;
-      width: 36px;
-      height: 36px;
-      cursor: pointer;
-      font-size: 16px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-      transition: background 0.15s, transform 0.1s;
-      touch-action: manipulation;
-      margin-bottom: 2px;
+      outline: none;
+      font-size: 13px;
+      color: var(--text-pri);
+      font-family: 'Inter', sans-serif;
+      resize: none;
+      line-height: 1.5;
+      min-height: 20px;
+      max-height: 120px;
+      overflow-y: hidden;
     }
 
-    .chat-input button:hover  { background: #255090; }
-    .chat-input button:active { transform: scale(0.92); background: #0f2550; }
+    #chat-input textarea::placeholder { color: var(--text-muted); }
+    #chat-input textarea:focus { outline: none; }
 
-    .chat-input.locked textarea { background: #f5f5f5; color: #aaa; cursor: not-allowed; }
-    .chat-input.locked button   { background: #c7c7cc; cursor: not-allowed; pointer-events: none; }
+    #chat-input button {
+      width: 34px; height: 34px;
+      border-radius: 50%;
+      background: var(--navy-light);
+      border: none;
+      color: #fff;
+      font-size: 14px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; flex-shrink: 0;
+      transition: background 0.15s;
+      font-family: 'Inter', sans-serif;
+    }
+
+    #chat-input button:hover { background: var(--navy-mid); }
+    #chat-input.locked textarea { color: var(--text-muted); cursor: not-allowed; }
+    #chat-input.locked button   { background: var(--bg-panel); cursor: not-allowed; pointer-events: none; }
 
     /* ── New chat bar ─────────────────────────────────────────────────────────── */
 
     .new-chat-bar {
-      padding: 12px 16px;
-      padding-bottom: max(12px, env(safe-area-inset-bottom));
-      border-top: 1px solid #d4dce8;
-      background: #fff;
-      text-align: center;
       display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 20px max(20px, env(safe-area-inset-bottom));
+      border-top: 1px solid var(--border);
       flex-shrink: 0;
     }
 
     .new-chat-bar button {
-      background: #1a3c6e;
+      width: 100%;
+      max-width: 320px;
+      background: var(--navy);
+      border: 1px solid var(--navy-light);
+      border-radius: var(--radius-sm);
+      padding: 10px 28px;
+      font-size: 13px;
+      font-weight: 600;
+      font-family: 'Inter', sans-serif;
       color: #fff;
-      border: none;
-      border-radius: 20px;
-      padding: 11px 28px;
-      font-size: 14px;
-      font-family: inherit;
       cursor: pointer;
-      transition: background 0.2s;
-      touch-action: manipulation;
+      transition: background 0.15s;
     }
 
-    .new-chat-bar button:hover { background: #255090; }
+    .new-chat-bar button:hover { background: var(--navy-mid); }
 
-    /* ── Form Panel — mini-form card ──────────────────────────────────────────── */
+    .new-chat-bar button.secondary {
+      background: transparent;
+      color: var(--text-sec);
+      border-color: var(--border-mid);
+    }
+
+    .new-chat-bar button.secondary:hover { color: var(--text-pri); }
+
+    /* ── Form panel ───────────────────────────────────────────────────────────── */
 
     #form-panel {
-      display: none;   /* shown when a form quick-start button is clicked */
+      display: none;
       flex: 1;
       overflow-y: auto;
-      padding: 14px 12px;
+      padding: 16px 20px;
       flex-direction: column;
-      gap: 12px;
+      gap: 14px;
       -webkit-overflow-scrolling: touch;
     }
 
-    /* White card that wraps all form fields */
     .mini-form {
-      background: #fff;
-      border-radius: 12px;
-      border: 1px solid #d4dce8;
-      padding: 16px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px;
       display: flex;
       flex-direction: column;
-      gap: 14px;
+      gap: 16px;
     }
 
-    .mini-form-title    { font-size: 16px; font-weight: 700; color: #1a1a1a; }
-    .mini-form-subtitle { font-size: 13px; color: #6b7a96; margin-top: 3px; }
+    .mini-form-title    { font-size: 16px; font-weight: 600; color: var(--text-pri); }
+    .mini-form-subtitle { font-size: 13px; color: var(--text-sec); margin-top: 2px; }
 
-    /* Read-only identity row inside the form */
     .form-identity-row {
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
       display: flex;
       align-items: center;
-      gap: 8px;
-      background: #f0f4fa;
-      border-radius: 8px;
-      padding: 8px 10px;
+      gap: 10px;
     }
 
     .form-id-avatar {
-      width: 28px;
-      height: 28px;
+      width: 30px; height: 30px;
       border-radius: 50%;
-      background: #1a3c6e;
+      background: var(--navy);
+      border: 1px solid var(--navy-light);
       color: #fff;
-      font-size: 10px;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      font-size: 10px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
       flex-shrink: 0;
     }
 
     .form-id-text { flex: 1; min-width: 0; }
+    .form-id-name { font-size: 12px; font-weight: 500; color: var(--text-pri); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .form-id-sub  { font-size: 10px; color: var(--text-muted); margin-top: 1px; line-height: 1.4; }
 
-    .form-id-name {
-      font-size: 12px;
+    /* "✓ Verified" pill inside form identity strip */
+    .form-id-lock {
+      margin-left: auto;
+      font-size: 10px;
+      color: var(--green);
+      background: rgba(29,158,117,0.12);
+      border: 1px solid rgba(29,158,117,0.25);
+      border-radius: 20px;
+      padding: 3px 10px;
       font-weight: 600;
-      color: #1a1a1a;
       white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      flex-shrink: 0;
     }
 
-    .form-id-sub {
-      font-size: 11px;
-      color: #6b7a96;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .form-id-lock { font-size: 12px; color: #6b7a96; flex-shrink: 0; }
-
-    /* CCTV amber warning card */
     .cctv-warning {
-      background: #fff8e1;
-      border: 1.5px solid #c9a84c;
-      border-radius: 10px;
+      background: rgba(212,134,15,0.08);
+      border: 1px solid rgba(212,134,15,0.35);
+      border-radius: var(--radius-sm);
       padding: 12px 14px;
-      font-size: 13px;
-      color: #7a5c00;
-      line-height: 1.5;
     }
 
-    .cctv-warning-title { font-weight: 600; margin-bottom: 6px; }
+    .cctv-warning-title { font-size: 12px; font-weight: 600; color: #e8a030; margin-bottom: 5px; }
 
     .cctv-checkbox-label {
       display: flex;
       align-items: flex-start;
-      gap: 8px;
+      gap: 9px;
       margin-top: 10px;
-      font-size: 13px;
-      color: #333;
+      font-size: 11px;
+      color: #c8912a;
       cursor: pointer;
+      line-height: 1.5;
     }
 
     .cctv-checkbox-label input[type="checkbox"] {
       margin-top: 2px;
       flex-shrink: 0;
-      accent-color: #1a3c6e;
-      width: 16px;
-      height: 16px;
+      accent-color: var(--amber);
+      width: 14px; height: 14px;
       cursor: pointer;
     }
 
-    /* Description textarea label */
     .form-field-label {
-      font-size: 12px;
+      font-size: 10px;
       font-weight: 600;
-      color: #6b7a96;
+      color: var(--text-muted);
       text-transform: uppercase;
-      letter-spacing: 0.4px;
+      letter-spacing: 0.5px;
       margin-bottom: 6px;
       display: block;
     }
@@ -761,218 +706,275 @@
     .form-textarea {
       width: 100%;
       resize: none;
-      border: 1.5px solid #d4dce8;
-      border-radius: 10px;
-      padding: 10px 14px;
-      font-size: 15px;
-      font-family: inherit;
-      line-height: 1.5;
+      background: var(--bg-input);
+      border: 1px solid var(--border-mid);
+      border-radius: var(--radius-sm);
+      padding: 9px 12px;
+      font-size: 13px;
+      font-family: 'Inter', sans-serif;
+      line-height: 1.6;
+      color: var(--text-pri);
       outline: none;
-      min-height: 120px;
-      background: #f9fafb;
-      color: #1a1a1a;
+      min-height: 110px;
       transition: border-color 0.15s;
     }
 
-    .form-textarea:focus { border-color: #1a3c6e; background: #fff; }
+    .form-textarea:focus { border-color: var(--navy-light); }
+    .form-textarea::placeholder { color: var(--text-muted); }
 
-    /* Word count — green when sufficient, red when not */
-    .word-count              { font-size: 12px; margin-top: 4px; color: #6b7a96; }
-    .word-count.sufficient   { color: #1D9E75; }
-    .word-count.insufficient { color: #c00; }
+    .word-count              { font-size: 10px; margin-top: 4px; text-align: right; }
+    .word-count.sufficient   { color: var(--green); }
+    .word-count.insufficient { color: var(--red); }
 
-    /* Submit button */
+    /* Form action row — back + submit side by side */
+    .form-actions { display: flex; gap: 10px; align-items: center; }
+
     .form-submit-btn {
-      width: 100%;
-      padding: 13px;
-      background: #1a3c6e;
+      flex: 1;
+      background: var(--navy);
+      border: 1px solid var(--navy-light);
+      border-radius: var(--radius-sm);
+      padding: 10px 20px;
+      font-size: 13px; font-weight: 600;
+      font-family: 'Inter', sans-serif;
       color: #fff;
-      border: none;
-      border-radius: 22px;
-      font-size: 15px;
-      font-weight: 600;
       cursor: pointer;
-      font-family: inherit;
-      transition: background 0.15s;
+      transition: background 0.15s, opacity 0.15s;
+      display: flex; align-items: center; justify-content: center;
     }
 
-    .form-submit-btn:hover:not(:disabled) { background: #255090; }
-    .form-submit-btn:disabled { background: #c7c7cc; cursor: not-allowed; }
-    .form-submit-btn.loading  { background: #6b7a96; cursor: wait; }
+    .form-submit-btn:hover:not(:disabled) { background: var(--navy-mid); }
+    .form-submit-btn:disabled { background: var(--bg-panel); border-color: var(--border); color: var(--text-muted); cursor: not-allowed; }
+    .form-submit-btn.loading  { opacity: 0.7; cursor: not-allowed; pointer-events: none; }
 
-    /* Back / cancel link */
     .form-back-link {
-      text-align: center;
-      font-size: 13px;
-      color: #6b7a96;
+      background: transparent;
+      border: 1px solid var(--border-mid);
+      border-radius: var(--radius-sm);
+      padding: 10px 18px;
+      font-size: 12px;
+      color: var(--text-sec);
+      font-family: 'Inter', sans-serif;
+      cursor: pointer;
+      transition: color 0.15s;
+      white-space: nowrap;
+    }
+
+    .form-back-link:hover { color: var(--text-pri); }
+
+    .form-error {
+      background: rgba(226,75,74,0.1);
+      border: 1px solid rgba(226,75,74,0.3);
+      border-radius: var(--radius-sm);
+      padding: 10px 13px;
+      font-size: 12px;
+      color: #f07070;
+      display: none;
+      line-height: 1.5;
+    }
+
+    /* ── My Tickets overlay panel ─────────────────────────────────────────────── */
+
+    .my-tickets-panel {
+      position: absolute;
+      inset: 0;
+      background: var(--bg-card);
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .my-tickets-panel-header {
+      background: #131e2a;
+      border-bottom: 1px solid var(--border);
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 13px; font-weight: 600;
+      color: var(--text-pri);
+      flex-shrink: 0;
+    }
+
+    .my-tickets-panel-header button {
+      background: transparent;
+      border: 1px solid var(--border-mid);
+      color: var(--text-sec);
+      padding: 5px 14px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 12px;
+      font-family: 'Inter', sans-serif;
+      transition: color 0.15s;
+    }
+
+    .my-tickets-panel-header button:hover { color: var(--text-pri); }
+
+    .my-tickets-list { flex: 1; overflow-y: auto; padding: 16px 20px; }
+
+    .ticket-item {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 12px 14px;
+      margin-bottom: 10px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+
+    .ticket-item:hover { border-color: var(--border-mid); }
+    .ticket-item .ti-jrf     { font-size: 10px; color: var(--text-muted); font-weight: 500; margin-bottom: 4px; }
+    .ticket-item .ti-problem { font-size: 13px; font-weight: 500; color: var(--text-pri); margin: 4px 0 6px; line-height: 1.4; }
+    .ticket-item .ti-status  { font-size: 11px; color: var(--text-sec); }
+
+    .ticket-detail {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      margin-bottom: 10px;
+    }
+
+    .ticket-detail p { font-size: 13px; line-height: 1.6; color: var(--text-sec); }
+
+    .ticket-detail .back-btn {
+      font-size: 12px;
+      color: var(--navy-light);
       cursor: pointer;
       background: none;
       border: none;
-      font-family: inherit;
-      padding: 4px;
-      text-decoration: underline;
+      padding: 0 0 8px;
+      font-family: 'Inter', sans-serif;
+      display: block;
     }
 
-    /* Inline error message */
-    .form-error {
-      background: #fff0f0;
-      border: 1.5px solid #c00;
-      border-radius: 8px;
-      padding: 10px 14px;
-      font-size: 13px;
-      color: #c00;
-      display: none;
+    /* ── Mobile ────────────────────────────────────────────────────────────────── */
+
+    @media (max-width: 768px) {
+      body { padding: 0; align-items: stretch; }
+      .shell { border-radius: 0; height: 100vh; margin: 0; max-width: none; }
+      .sidebar { display: none; }
+      .main { width: 100%; }
+      #chat-input textarea { font-size: 16px; }   /* prevent iOS zoom */
+      .qs-grid { padding: 14px 14px 0; gap: 8px; }
+      .chat-messages { padding: 10px 14px 8px; }
+      #chat-input { margin: 8px 14px max(14px, env(safe-area-inset-bottom)); }
+      .new-chat-bar { padding: 12px 14px max(20px, env(safe-area-inset-bottom)); }
     }
-
-    /* ── Flow-switch warning modal ────────────────────────────────────────────── */
-
-    #flow-switch-confirm {
-      display: none;   /* flex when shown */
-      position: absolute;
-      inset: 0;
-      background: rgba(0,0,0,0.45);
-      z-index: 30;
-      align-items: flex-end;
-      justify-content: center;
-      padding: 0 16px max(20px, env(safe-area-inset-bottom));
-    }
-
-    .flow-switch-dialog {
-      background: #fff;
-      border-radius: 14px;
-      padding: 20px 20px 16px;
-      width: 100%;
-      max-width: 420px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.18);
-    }
-
-    .flow-switch-dialog-title {
-      font-size: 15px;
-      font-weight: 700;
-      color: #1a1a1a;
-      text-align: center;
-      margin-bottom: 8px;
-    }
-
-    .flow-switch-dialog p {
-      font-size: 13px;
-      color: #6b7a96;
-      text-align: center;
-      line-height: 1.5;
-      margin-bottom: 16px;
-    }
-
-    .flow-switch-actions {
-      display: flex;
-      gap: 8px;
-    }
-
-    .flow-switch-actions button {
-      flex: 1;
-      padding: 11px;
-      border-radius: 10px;
-      font-size: 14px;
-      font-weight: 600;
-      font-family: inherit;
-      cursor: pointer;
-      border: none;
-      touch-action: manipulation;
-    }
-
-    .fsw-cancel  { background: #f0f4fa; color: #1a3c6e; }
-    .fsw-confirm { background: #1a3c6e; color: #fff; }
   </style>
 </head>
 <body>
-  <div class="chat-container">
+  <div class="shell">
 
-    <!-- Header — navy bar with PSHS ZRC logo and green status dot -->
-    <div class="chat-header">
-      <div class="header-avatar">
-        <img src="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w200" alt="PSHS ZRC Logo">
+    <!-- ── Sidebar ────────────────────────────────────────────────────────────── -->
+    <aside class="sidebar">
+
+      <!-- Logo block -->
+      <div class="sidebar-logo">
+        <img class="logo-img" src="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w200" alt="PSHS ZRC Logo">
+        <div>
+          <div class="logo-name">IT Help Desk</div>
+          <div class="logo-sub">PSHS Zamboanga Peninsula</div>
+        </div>
       </div>
-      <div class="header-text">
-        <div class="header-name">IT Unit Help Desk</div>
-        <div class="header-status">PSHS Zamboanga Peninsula Region Campus in Dipolog City</div>
-      </div>
-      <div class="header-dot"></div>
-    </div>
 
-    <!-- Identity bar — hidden until Google account resolves; shows initials + Verified badge -->
-    <div id="identity-bar">
-      <div class="id-bar-avatar" id="id-bar-avatar">?</div>
-      <div class="id-bar-info">
-        <div class="id-bar-name" id="id-bar-name">Loading…</div>
-        <div class="id-bar-sub"  id="id-bar-sub"></div>
-      </div>
-      <div class="id-bar-badge">✓ Verified</div>
-    </div>
-
-    <!-- Loading spinner — visible by default while getUserIdentity() runs -->
-    <div id="loading-state">
-      <div class="spinner"></div>
-      <div class="loading-text">Verifying your identity…</div>
-    </div>
-
-    <!-- Main content — hidden until identity resolves -->
-    <div id="main-content">
-
-      <!-- Compact ticket status strip (hidden if no new updates) -->
+      <!-- MY TICKETS strip — label + items shown together; hidden until user has tickets -->
       <div id="ticket-strip">
-        <div class="ticket-strip-label">Recent Updates</div>
-        <div class="ticket-strip-items" id="ticket-strip-items"></div>
+        <div class="sidebar-section-label">My Tickets</div>
+        <div id="ticket-strip-items"></div>
       </div>
 
-      <!-- 2×2 quick-start grid -->
-      <div class="qs-grid" id="qs-grid">
-        <button class="qs-btn" data-type="it_issue" onclick="handleQsClick(this)">
-          <span class="qs-icon">💻</span>
-          <span class="qs-label">IT Issue / Repair</span>
-          <span class="qs-sub">Troubleshoot with AI</span>
-        </button>
-        <button class="qs-btn" data-type="publication" onclick="handleQsClick(this)">
-          <span class="qs-icon">🎨</span>
-          <span class="qs-label">Publication / Design</span>
-          <span class="qs-sub">Pubmat, tarpaulin, etc.</span>
-        </button>
-        <button class="qs-btn" data-type="cctv" onclick="handleQsClick(this)">
-          <span class="qs-icon">📷</span>
-          <span class="qs-label">CCTV Request</span>
-          <span class="qs-sub">Requires Director letter</span>
-        </button>
-        <button class="qs-btn" data-type="technical" onclick="handleQsClick(this)">
-          <span class="qs-icon">🔧</span>
-          <span class="qs-label">Technical Assistance</span>
-          <span class="qs-sub">Setup, installation, etc.</span>
-        </button>
+      <!-- Spacer pushes user card to bottom -->
+      <div style="flex:1;"></div>
+
+      <!-- User card — shown after identity resolves -->
+      <div class="sidebar-bottom">
+        <!-- Theme toggle sits above the user card -->
+        <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+          <button class="btn-theme-toggle" id="theme-toggle" title="Toggle light/dark mode">
+            <span id="theme-icon">☀️</span>
+          </button>
+        </div>
+        <div id="identity-bar">
+          <div class="id-bar-avatar" id="id-bar-avatar">?</div>
+          <div class="id-bar-info">
+            <div class="id-bar-name" id="id-bar-name">Loading…</div>
+            <div class="id-bar-sub"  id="id-bar-sub"></div>
+          </div>
+          <div class="id-bar-badge">✓ Verified</div>
+        </div>
       </div>
 
-      <!-- Visual separator between quick-start area and chat -->
-      <div class="chat-area-sep"><span>chat</span></div>
+    </aside><!-- /.sidebar -->
 
-      <!-- Direct-submit shortcut — shown when IT Issue flow is active -->
-      <div id="direct-submit-bar">
-        <button onclick="showFormPanel('it_issue')">📝 Skip troubleshooting — submit ticket directly</button>
+    <!-- ── Main panel ─────────────────────────────────────────────────────────── -->
+    <div class="main">
+
+      <!-- Loading spinner — visible by default while getUserIdentity() runs -->
+      <div id="loading-state">
+        <div class="spinner"></div>
+        <div class="loading-text">Verifying your identity…</div>
       </div>
 
-      <!-- Chat message bubbles -->
-      <div class="chat-messages" id="messages"></div>
+      <!-- Main content — hidden until identity resolves -->
+      <div id="main-content">
 
-      <!-- Form panel — shown instead of messages for publication/cctv/technical flows -->
-      <div id="form-panel"></div>
+        <!-- 2×2 quick-start service cards -->
+        <div class="qs-grid" id="qs-grid">
+          <button class="qs-btn" data-type="it_issue" onclick="handleQsClick(this)">
+            <div class="qs-icon-wrap">💻</div>
+            <span class="qs-label">IT Issue / Repair</span>
+            <span class="qs-sub">Troubleshoot with AI</span>
+          </button>
+          <button class="qs-btn" data-type="publication" onclick="handleQsClick(this)">
+            <div class="qs-icon-wrap">🎨</div>
+            <span class="qs-label">Publication / Design</span>
+            <span class="qs-sub">Pubmat, tarpaulin, etc.</span>
+          </button>
+          <button class="qs-btn" data-type="cctv" onclick="handleQsClick(this)">
+            <div class="qs-icon-wrap">📷</div>
+            <span class="qs-label">CCTV Request</span>
+            <span class="qs-sub">Requires Director letter</span>
+          </button>
+          <button class="qs-btn" data-type="technical" onclick="handleQsClick(this)">
+            <div class="qs-icon-wrap">🔧</div>
+            <span class="qs-label">Technical Assistance</span>
+            <span class="qs-sub">Setup, installation, etc.</span>
+          </button>
+        </div>
 
-    </div><!-- /#main-content -->
+        <!-- Visual separator between quick-start area and chat -->
+        <div class="chat-area-sep"><span>chat</span></div>
 
-    <div class="chat-input" id="chat-input">
-      <textarea id="input" placeholder="Choose an option above…" rows="1" disabled></textarea>
-      <button id="sendBtn">&#9650;</button>
-    </div>
+        <!-- Direct-submit shortcut — shown when IT Issue flow is active -->
+        <div id="direct-submit-bar">
+          <button onclick="showFormPanel('it_issue')">📝 Skip troubleshooting — submit ticket directly</button>
+        </div>
 
-    <div class="new-chat-bar" id="new-chat-bar">
-      <button onclick="resetChat()">&#8635; Start a New Conversation</button>
-    </div>
+        <!-- Chat message bubbles -->
+        <div class="chat-messages" id="messages"></div>
 
-  </div>
+        <!-- Form panel — shown instead of messages for publication/cctv/technical flows -->
+        <div id="form-panel"></div>
+
+      </div><!-- /#main-content -->
+
+      <!-- Chat input bar — hidden by default; shown only when IT Issue is active -->
+      <div id="chat-input">
+        <textarea id="input" placeholder="Message" rows="1" disabled></textarea>
+        <button id="sendBtn">&#9650;</button>
+      </div>
+
+      <!-- "Start a New Conversation" bar — shown after chat locks -->
+      <div class="new-chat-bar" id="new-chat-bar">
+        <button onclick="resetChat()">&#8635; Start a New Conversation</button>
+        <button class="secondary" id="view-tickets-btn" onclick="openMyTickets()" style="display:none;">&#128203; View My Tickets</button>
+      </div>
+
+    </div><!-- /.main -->
+
+  </div><!-- /.shell -->
 
   <script>
     const messagesEl   = document.getElementById('messages');
@@ -1024,7 +1026,14 @@
       inputEl.disabled = true;
       inputEl.placeholder = 'Conversation ended.';
       chatInputEl.style.display = 'none';
-      newChatBar.style.display = 'block';
+      newChatBar.style.display = 'flex';
+      // Show "View My Tickets" only when we have an identified user to query
+      const viewBtn = document.getElementById('view-tickets-btn');
+      if (viewBtn && currentUser && currentUser.email) {
+        viewBtn.style.display = 'block';
+      }
+      // Refresh the MY TICKETS strip so the newly submitted ticket appears
+      refreshTicketStrip();
     }
 
     /* Returns initials from a full name (first + last character) */
@@ -1158,23 +1167,21 @@
     /* showQuickReplies is a no-op — the 2×2 grid in #main-content is always visible */
     function showQuickReplies() { /* no-op */ }
 
-    /* Handles click on a 2×2 grid button.
-       Checks whether this button was ALREADY active before toggling, so re-clicking
-       the same button never re-adds the intro message. */
+    /* Handles click on a 2×2 grid button. */
     function handleQsClick(btn) {
-      const alreadyActive = btn.classList.contains('active');
       document.querySelectorAll('.qs-btn').forEach(function(b) { b.classList.remove('active'); });
       btn.classList.add('active');
-      const type  = btn.getAttribute('data-type');
-      const label = btn.querySelector('.qs-label').textContent;
-      handleQuickReply(type, label, alreadyActive);
+      const type = btn.getAttribute('data-type');
+      handleQuickReply(type);
     }
 
-    /* Routes the user to either the chat flow (it_issue/question) or the inline form panel.
-       alreadyActive = true means the user re-clicked the same button; skip showing the intro again. */
-    function handleQuickReply(key, label, alreadyActive) {
+    /* Routes the user to either the chat flow (it_issue) or the inline form panel.
+       Chat messages are NEVER wiped when switching — the intro is only added once
+       per session (when the messages area is empty). Form panels are shown/hidden
+       without touching the message history. */
+    function handleQuickReply(key) {
       if (key === 'it_issue' || key === 'question') {
-        // Chat flow — hide any open form panel, restore messages, enable input
+        // Restore chat view (in case a form panel was open)
         document.getElementById('form-panel').style.display = 'none';
         messagesEl.style.display = '';
         enableInput();
@@ -1182,19 +1189,15 @@
         currentChatKey = key;
         const dsBar = document.getElementById('direct-submit-bar');
 
-        if (!alreadyActive) {
-          // First click on this button (or switching from another flow) — show intro message
+        // Show intro only if the chat is empty (first click in this session)
+        if (messagesEl.children.length === 0) {
           if (key === 'it_issue') {
             addMessage('Sure! Please describe the IT issue you\'re experiencing and I\'ll help troubleshoot.', 'bot');
-            if (dsBar) dsBar.style.display = 'block';
           } else {
             addMessage('Sure! What would you like to know?', 'bot');
-            if (dsBar) dsBar.style.display = 'none';
           }
-        } else {
-          // Re-clicked same button — just ensure correct bar visibility, no new message
-          if (dsBar) dsBar.style.display = key === 'it_issue' ? 'block' : 'none';
         }
+        if (dsBar) dsBar.style.display = key === 'it_issue' ? 'block' : 'none';
       } else {
         // Form flow — show the mini-form card panel
         currentChatKey = null;
@@ -1214,18 +1217,23 @@
       // Clear messages
       messagesEl.innerHTML = '';
       messagesEl.style.display = '';
-      // Reset input bar
+      // Reset input bar — hidden until user clicks IT Issue again
       chatInputEl.classList.remove('locked');
-      chatInputEl.style.display = '';
+      chatInputEl.style.display = 'none';
       inputEl.disabled = true;
-      inputEl.placeholder = 'Choose an option above…';
+      inputEl.placeholder = 'Message';
       // Hide form panel and direct-submit bar
       document.getElementById('form-panel').style.display = 'none';
       document.getElementById('direct-submit-bar').style.display = 'none';
       newChatBar.style.display = 'none';
+      // Hide the "View My Tickets" button until the next lock
+      const viewBtn = document.getElementById('view-tickets-btn');
+      if (viewBtn) viewBtn.style.display = 'none';
     }
 
     function enableInput() {
+      chatInputEl.style.display = 'flex';
+      chatInputEl.classList.remove('locked');
       inputEl.disabled = false;
       inputEl.placeholder = 'Message';
     }
@@ -1282,82 +1290,99 @@
       identityBar.style.display  = 'flex';
       mainContent.style.display  = 'flex';
 
-      // Enable input immediately so user can type without clicking a button first
-      enableInput();
+      // Input stays hidden until the user clicks IT Issue / Repair
 
-      // Fetch ticket status updates to populate the strip
+      // Fetch all user tickets to populate the MY TICKETS strip
       google.script.run
-        .withSuccessHandler(onTicketUpdatesReceived)
+        .withSuccessHandler(onMyTicketsLoaded)
         .withFailureHandler(function() { /* strip stays hidden on error */ })
-        .getTicketUpdates(identity.email);
+        .getMyTickets(identity.email);
     }
 
     /* Shows a full-screen error/auth message that replaces the container contents */
     function showFullScreenMessage(message, buttonText, buttonAction) {
-      const container = document.querySelector('.chat-container');
+      const container = document.querySelector('.main');
       container.innerHTML = '';
       const div = document.createElement('div');
       div.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:32px;text-align:center;gap:16px;';
       const p = document.createElement('p');
-      p.style.cssText = 'font-size:15px;color:#333;line-height:1.5;max-width:320px;';
+      p.style.cssText = 'font-size:15px;color:var(--text-sec);line-height:1.5;max-width:320px;';
       p.textContent = message;
       const btn = document.createElement('button');
       btn.textContent = buttonText;
-      btn.style.cssText = 'padding:12px 24px;background:#1a3c6e;color:#fff;border:none;border-radius:24px;font-size:15px;cursor:pointer;font-family:inherit;';
+      btn.style.cssText = 'padding:12px 24px;background:var(--navy);color:#fff;border:1px solid var(--navy-light);border-radius:var(--radius-sm);font-size:14px;cursor:pointer;font-family:inherit;';
       btn.onclick = buttonAction;
       div.appendChild(p);
       div.appendChild(btn);
       container.appendChild(div);
     }
 
-    /* Renders the compact ticket status strip with status pills (max 2 visible) */
-    function onTicketUpdatesReceived(updates) {
-      if (!updates || updates.length === 0) return;
+    /* Returns the sidebar dot CSS class for a given ticket status */
+    function statusDotClass(status) {
+      if (!status) return 'dot-pending';
+      if (status.includes('Completed')) return 'dot-done';
+      if (status.includes('Rejected'))  return 'dot-rejected';
+      if (status.includes('Progress'))  return 'dot-progress';
+      return 'dot-pending';
+    }
 
-      const cacheKey = 'pshs_ticket_cache_' + (currentUser && currentUser.email ? currentUser.email : '');
-      let lastCache = {};
-      try { lastCache = JSON.parse(localStorage.getItem(cacheKey) || '{}'); } catch(e) {}
+    /* Returns a short human-readable label for a ticket status */
+    function statusShortLabel(status) {
+      if (!status) return 'Pending';
+      if (status.includes('Completed'))              return 'Completed';
+      if (status.includes('Rejected'))               return 'Rejected';
+      if (status === 'In Progress')                  return 'In Progress';
+      if (status.includes('Supervisor Approval'))    return 'Awaiting supervisor';
+      if (status.includes('IT Assessment'))          return 'Awaiting IT assessment';
+      if (status.includes('Director Approval'))      return 'Awaiting director';
+      return status;
+    }
 
-      // Only show tickets whose status has changed since last visit
-      const changed = updates.filter(function(t) { return lastCache[t.jrfNo] !== t.status; });
-      if (changed.length === 0) return;
+    /* Renders the MY TICKETS sidebar strip.
+       Called on page load (via getMyTickets) and after a ticket is submitted. */
+    function onMyTicketsLoaded(tickets) {
+      if (!tickets || tickets.length === 0) return;
 
       const stripItems = document.getElementById('ticket-strip-items');
-      const visible    = changed.slice(0, 2);
+      stripItems.innerHTML = ''; // clear any previous content
 
+      // Show up to 3 tickets in the sidebar; the rest are accessible via the overlay panel
+      const visible = tickets.slice(0, 3);
       visible.forEach(function(t) {
         const item = document.createElement('div');
-        item.className = 'ticket-strip-item';
+        item.className = 'sidebar-ticket-item';
+        item.onclick   = function() { openMyTickets(); };
 
-        // Shorten status label for the pill
-        let pillLabel = t.status;
-        if (t.status.includes('Pending')) pillLabel = 'Pending';
-        if (t.status === 'In Progress')   pillLabel = 'In Progress';
-        if (t.status === 'Completed')     pillLabel = 'Completed';
-        if (t.status === 'Rejected')      pillLabel = 'Rejected';
-
-        const problem = t.problem.length > 45 ? t.problem.substring(0, 45) + '…' : t.problem;
+        const problem = t.problem.length > 40 ? t.problem.substring(0, 40) + '…' : t.problem;
         item.innerHTML =
-          '<span class="ts-jrf">#' + escHtml(t.jrfNo) + '</span>' +
-          '<span class="ts-problem">' + escHtml(problem) + '</span>' +
-          '<span class="ts-pill ' + statusPillClass(t.status) + '">' + escHtml(pillLabel) + '</span>';
+          '<div class="sidebar-ticket-id">' +
+            '<span class="sidebar-ticket-dot ' + statusDotClass(t.status) + '"></span>' +
+            '#' + escHtml(t.jrfNo) +
+          '</div>' +
+          '<div class="sidebar-ticket-title">' + escHtml(problem) + '</div>' +
+          '<div class="sidebar-ticket-status">' + escHtml(statusShortLabel(t.status)) + '</div>';
         stripItems.appendChild(item);
       });
 
-      // Show "N more" toggle if there are more than 2 updates
-      if (changed.length > 2) {
+      // Show "View all N tickets" link when there are more than 3
+      if (tickets.length > 3) {
         const more = document.createElement('button');
         more.className   = 'ticket-strip-toggle';
-        more.textContent = '+ ' + (changed.length - 2) + ' more — tap to view all';
+        more.textContent = 'View all ' + tickets.length + ' tickets →';
         more.onclick     = openMyTickets;
         stripItems.appendChild(more);
       }
 
-      document.getElementById('ticket-strip').style.display = 'block';
+      document.getElementById('ticket-strip').style.display = 'flex';
+    }
 
-      // Update local cache so strip only shows truly new changes next time
-      updates.forEach(function(t) { lastCache[t.jrfNo] = t.status; });
-      try { localStorage.setItem(cacheKey, JSON.stringify(lastCache)); } catch(e) {}
+    /* Refreshes the MY TICKETS strip — called after a ticket is submitted. */
+    function refreshTicketStrip() {
+      if (!currentUser || !currentUser.email) return;
+      google.script.run
+        .withSuccessHandler(onMyTicketsLoaded)
+        .withFailureHandler(function() {})
+        .getMyTickets(currentUser.email);
     }
 
     // ── My Tickets overlay panel ─────────────────────────────────────────────────
@@ -1370,7 +1395,7 @@
     }
 
     function renderMyTicketsPanel(tickets) {
-      const container = document.querySelector('.chat-container');
+      const container = document.querySelector('.main');
       const existing  = document.getElementById('my-tickets-panel');
       if (existing) existing.remove();
 
@@ -1491,7 +1516,7 @@
               '<div class="form-id-name">' + escHtml(idName) + '</div>' +
               '<div class="form-id-sub">'  + escHtml(idSub)  + '</div>' +
             '</div>' +
-            '<span class="form-id-lock">🔒</span>' +
+            '<span class="form-id-lock">✓ Verified</span>' +
           '</div>' +
           cctvHtml +
           '<div>' +
@@ -1500,8 +1525,10 @@
             '<div class="word-count insufficient" id="word-count-display">0 words — please add more detail</div>' +
           '</div>' +
           '<div class="form-error" id="form-error"></div>' +
-          '<button class="form-submit-btn" id="form-submit-btn" onclick="submitFormRequest()" disabled>Submit Request</button>' +
-          '<button class="form-back-link" onclick="hideFormPanel()">← Back</button>' +
+          '<div class="form-actions">' +
+            '<button class="form-back-link" onclick="hideFormPanel()">← Back</button>' +
+            '<button class="form-submit-btn" id="form-submit-btn" onclick="submitFormRequest()" disabled>Submit Request →</button>' +
+          '</div>' +
         '</div>';
 
       // Save the current chat key so hideFormPanel can restore it without re-showing the intro
@@ -1515,25 +1542,26 @@
       formPanel.style.display                                    = 'flex';
     }
 
-    /* Hides the form panel and restores the chat view */
+    /* Hides the form panel and restores the chat view.
+       Does NOT change the message history or active button state — the user is just
+       navigating back to the chat without switching to a different flow. */
     function hideFormPanel() {
       document.getElementById('form-panel').style.display = 'none';
-      messagesEl.style.display  = '';
-      chatInputEl.style.display = '';
+      messagesEl.style.display = '';
       currentFormType = null;
-      // Restore the chat key that was active before the form was opened
+      // Restore the chat key that was active before the form opened
       currentChatKey = savedChatKey;
       savedChatKey   = null;
-
-      // Restore direct-submit bar visibility and active button state
+      // Only show the input bar when returning to IT Issue chat
+      const dsBar = document.getElementById('direct-submit-bar');
       if (currentChatKey === 'it_issue') {
-        document.getElementById('direct-submit-bar').style.display = 'block';
-        // Re-mark the IT Issue button as active so a subsequent click is treated as alreadyActive
+        chatInputEl.style.display = 'flex';
+        if (dsBar) dsBar.style.display = 'block';
         const itBtn = document.querySelector('.qs-btn[data-type="it_issue"]');
         if (itBtn) itBtn.classList.add('active');
       } else {
-        document.getElementById('direct-submit-bar').style.display = 'none';
-        document.querySelectorAll('.qs-btn').forEach(function(b) { b.classList.remove('active'); });
+        chatInputEl.style.display = 'none';
+        if (dsBar) dsBar.style.display = 'none';
       }
     }
 
@@ -1648,7 +1676,7 @@
       if (submitBtn) {
         submitBtn.disabled    = false;
         submitBtn.classList.remove('loading');
-        submitBtn.textContent = 'Submit Request';
+        submitBtn.textContent = 'Submit Request →';
       }
       const msg = (err && err.message) ? err.message : 'Something went wrong. Please try again or contact the IT unit directly.';
       if (errorEl) {
@@ -1657,8 +1685,28 @@
       }
     }
 
+    /* Theme toggle — DESIGN.md §7-C */
+    function initThemeToggle() {
+      var btn  = document.getElementById('theme-toggle');
+      var icon = document.getElementById('theme-icon');
+      function update() {
+        var isLight = document.documentElement.classList.contains('light-mode');
+        if (icon) icon.textContent = isLight ? '🌙' : '☀️';
+      }
+      update();
+      if (btn) {
+        btn.addEventListener('click', function() {
+          document.documentElement.classList.toggle('light-mode');
+          var isLight = document.documentElement.classList.contains('light-mode');
+          localStorage.setItem('pshs_theme', isLight ? 'light' : 'dark');
+          update();
+        });
+      }
+    }
+
     // Start identity resolution immediately on page load
     window.addEventListener('load', function() {
+      initThemeToggle();
       initChat();
     });
   </script>
