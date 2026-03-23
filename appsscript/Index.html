@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <!-- Prevent iOS from auto-linking phone numbers, addresses, dates in chat bubbles -->
   <meta name="format-detection" content="telephone=no, date=no, address=no, email=no, url=no">
-  <title>PSHS-ZRC IT Help Desk</title>
+  <title>PSHS-ZRC IT Unit Help Desk</title>
   <link rel="icon" type="image/png" href="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w64">
   <!-- Apply saved theme before first paint to prevent flash of wrong theme (DESIGN.md §7-C) -->
   <script>
@@ -95,7 +95,7 @@
     body {
       font-family: 'Inter', sans-serif;
       background-color: var(--bg-base);
-      background-image: url('https://drive.google.com/thumbnail?id=1YYOXIIiN3t3uY6SjbcwolH2zFOo_4PLE&sz=w1920');
+      background-image: url('https://drive.google.com/thumbnail?id=1rSPTtHpvS4kw_9AAOGDQk_FnnLpa7SXC&sz=w1920');
       background-size: cover;
       background-position: center;
       background-attachment: fixed;
@@ -888,7 +888,7 @@
       <div class="sidebar-logo">
         <img class="logo-img" src="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w200" alt="PSHS ZRC Logo">
         <div>
-          <div class="logo-name">IT Help Desk</div>
+          <div class="logo-name">IT Unit Help Desk</div>
           <div class="logo-sub">PSHS-ZRC</div>
         </div>
       </div>
@@ -1442,7 +1442,7 @@
           item.className = 'ticket-item';
           const problem = t.problem.length > 60 ? t.problem.substring(0, 60) + '…' : t.problem;
           item.innerHTML =
-            '<div class="ti-jrf">JRF #' + escHtml(t.jrfNo) + ' &nbsp;·&nbsp; ' + escHtml(t.date) + '</div>' +
+            '<div class="ti-jrf">IT JRF #' + escHtml(t.jrfNo) + ' &nbsp;·&nbsp; ' + escHtml(t.date) + '</div>' +
             '<div class="ti-problem">' + escHtml(problem) + '</div>' +
             '<div class="ti-status">' + escHtml(t.status) + '</div>';
           item.onclick = function() { showTicketDetail(list, t, tickets); };
@@ -1466,7 +1466,7 @@
       detail.appendChild(backBtn);
 
       const fields = [
-        ['JRF #:',   t.jrfNo],
+        ['IT JRF #:',   t.jrfNo],
         ['Date:',    t.date],
         ['Status:',  t.status],
         ['Problem:', t.problem],

@@ -1,5 +1,5 @@
 // =============================================================================
-// PSHS ZRC IT Job Request Form (ITJRF) Chatbot — Backend
+// PSHS ZRC IT Job Request Form (IT JRF) Chatbot — Backend
 // Google Apps Script + Google Sheets + Gemini API
 // =============================================================================
 
@@ -182,11 +182,11 @@ function doGet(e) {
   const page = (e && e.parameter && e.parameter.page) || '';
   if (page === 'dashboard') {
     return HtmlService.createHtmlOutputFromFile('Dashboard')
-      .setTitle('PSHS ZRC IT Dashboard')
+      .setTitle('PSHS-ZRC IT Unit Dashboard')
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
   }
   return HtmlService.createHtmlOutputFromFile('Index')
-    .setTitle('PSHS ZRC IT Support Chatbot')
+    .setTitle('PSHS-ZRC IT Unit Help Desk')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
@@ -387,8 +387,9 @@ function handleChat(message, session) {
     // When identity is already known (Google account pre-fill), auto-file the ticket
     // immediately — but only if the conversation contains actual IT-related details.
     if (session.identityVerified) {
-      // Build a comprehensive description from the full conversation, then paraphrase
-      const rawDesc    = buildDescriptionFromHistory(session) || prefillDesc;
+      // Build + paraphrase description from conversation history in one Gemini call
+      const built      = buildAndParaphraseDescription(session, '');
+      const rawDesc    = built.rawDesc || prefillDesc;
 
       // Guard: reject filing if there is no real IT context in the conversation.
       // Any mix of gibberish + unrelated inputs counts toward the shared 3-strike limit.
@@ -412,7 +413,7 @@ function handleChat(message, session) {
       // Reset strike counter once valid IT context is confirmed
       session.strikeCount = 0;
 
-      const formalDesc = paraphraseDescription(rawDesc);
+      const formalDesc = built.formalDesc || rawDesc;
 
       const ticketData = {
         name:            session.formData.name            || '',
@@ -591,11 +592,10 @@ function handleFormStep(message, session) {
           : 'Before I file the request, could you give me a bit more detail? Which device or system is affected, what exactly happens, and whether you\'ve already tried anything.';
         return { reply: followUp, session };
       }
-      // Build description from full conversation history, then formally paraphrase
-      const rawDescription = buildDescriptionFromHistory(session) || message;
-      const formalDescription = paraphraseDescription(
-        session.quickStartLabel ? session.quickStartLabel + ': ' + rawDescription : rawDescription
-      );
+      // Build + paraphrase description from conversation history in one Gemini call
+      const built2        = buildAndParaphraseDescription(session, session.quickStartLabel || '');
+      const rawDescription  = built2.rawDesc  || message;
+      const formalDescription = built2.formalDesc || rawDescription;
       session.formData.rawDescription = rawDescription;
       session.formData[step.key] = formalDescription;
     } else {
@@ -939,8 +939,74 @@ function buildDescriptionFromHistory(session) {
 }
 
 /**
+ * Extracts a comprehensive description from conversation history AND formally paraphrases
+ * it in a single Gemini call — saves one API round-trip vs calling both functions separately.
+ *
+ * @param {object} session       - Chat session (needs session.history, session.formData)
+ * @param {string} [labelPrefix] - Optional context label e.g. "Technical Assistance"
+ * @returns {{ rawDesc: string, formalDesc: string }}
+ */
+function buildAndParaphraseDescription(session, labelPrefix) {
+  const fallback = (session.formData && session.formData.description) ? session.formData.description : '';
+  try {
+    const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+    if (!apiKey || !session.history || session.history.length === 0) {
+      const formal = labelPrefix ? labelPrefix + ': ' + fallback : fallback;
+      return { rawDesc: fallback, formalDesc: formal };
+    }
+
+    const historyText = session.history
+      .map(function(turn) { return (turn.role === 'user' ? 'User: ' : 'Bot: ') + turn.text; })
+      .join('\n');
+
+    const contextNote = labelPrefix
+      ? 'Note: this is a "' + labelPrefix + '" type request — reflect this in the formal version.\n'
+      : '';
+
+    const prompt =
+      'You are a document assistant for PSHS Zamboanga Regional Campus (a Philippine government school).\n' +
+      'Read the conversation and return ONLY a JSON object with two fields:\n' +
+      '"raw": plain English or Filipino summary of the IT problem/request ' +
+      '(max 4 sentences; include device/system, steps already tried, event/occasion details if relevant)\n' +
+      '"formal": formal rewrite for a Philippine government document ' +
+      '(max 3 sentences; begin with "The requesting party reports that..." ' +
+      'or "A request has been made for..." as appropriate; keep all details exact)\n' +
+      contextNote +
+      'Use ONLY information from the conversation. Output ONLY valid JSON, no markdown fences.\n\n' +
+      'Conversation:\n' + historyText;
+
+    const payload = {
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.2, maxOutputTokens: 512 },
+    };
+    const response = UrlFetchApp.fetch(GEMINI_ENDPOINT + '?key=' + apiKey, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    });
+    const text = JSON.parse(response.getContentText())
+      ?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) throw new Error('empty Gemini response');
+
+    // Strip markdown code fences in case Gemini adds them despite instructions
+    const cleaned = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+    const parsed  = JSON.parse(cleaned);
+    return {
+      rawDesc:   (parsed.raw    || fallback).trim(),
+      formalDesc: (parsed.formal || parsed.raw || fallback).trim(),
+    };
+  } catch (err) {
+    console.error('buildAndParaphraseDescription error: ' + err);
+    const formal = labelPrefix ? labelPrefix + ': ' + fallback : fallback;
+    return { rawDesc: fallback, formalDesc: formal };
+  }
+}
+
+/**
  * Formally paraphrases a raw IT request description into Philippine government document style.
  * Returns rawText unchanged on API error.
+ * Used by submitFormTicket() where there is no conversation history to extract from.
  */
 function paraphraseDescription(rawText) {
   try {
@@ -1013,11 +1079,23 @@ function buildConfirmationMessage(data) {
  */
 function searchKnowledgeBase(query) {
   try {
-    const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
-    const sheet = ss.getSheetByName(KB_SHEET_NAME);
-    if (!sheet) return null;
+    // Try CacheService first — KB changes infrequently so cache for 1 hour (3600 s).
+    // Falls back to a direct sheet read if the cache is cold, missing, or oversized.
+    const cache  = CacheService.getScriptCache();
+    let   kbRows = null;
+    const cached = cache.get('kb_data');
+    if (cached) {
+      try { kbRows = JSON.parse(cached); } catch(e) { kbRows = null; }
+    }
+    if (!kbRows) {
+      const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+      const sheet = ss.getSheetByName(KB_SHEET_NAME);
+      if (!sheet) return null;
+      kbRows = sheet.getDataRange().getValues();
+      try { cache.put('kb_data', JSON.stringify(kbRows), 3600); } catch(e) { /* skip if data exceeds 100 KB limit */ }
+    }
 
-    const data    = sheet.getDataRange().getValues();
+    const data    = kbRows;
     const words   = query.toLowerCase().split(/\W+/).filter(w => w.length > 2);
     const matches = [];
 
@@ -1070,7 +1148,7 @@ function callGemini(message, history, kbContext) {
   // --- System instruction ---
   const systemText =
     'You are the IT Support Chatbot for PSHS Zamboanga Regional Campus (PSHS ZRC). ' +
-    'You help staff troubleshoot IT issues and file IT Job Request Forms (ITJRF).\n' +
+    'You help staff troubleshoot IT issues and file IT Job Request Forms (IT JRF).\n' +
     'The user has been identified via their Google account. ' +
     'Name, position, department, and supervisor are already known — do NOT ask for them.\n\n' +
 
@@ -1136,7 +1214,7 @@ function callGemini(message, history, kbContext) {
        '   - unsay buhaton = what should I do\n' +
        '   - nag-restart ra = keeps restarting\n' +
        '   - wala na = doesn\'t work anymore\n\n' +
-    'ITJRF Recommendation Types (for reference):\n' +
+    'IT JRF Recommendation Types (for reference):\n' +
     RECOMMENDATION_TYPES.map((t, i) => `${i + 1}. ${t}`).join('\n');
 
   // --- Build contents array ---
@@ -1204,11 +1282,11 @@ function callGemini(message, history, kbContext) {
 // =============================================================================
 
 /**
- * Writes one row to the ITJRF sheet.
+ * Writes one row to the IT JRF sheet.
  * Creates the sheet with headers if it doesn't exist.
  *
- * ITJRF columns:
- *   JRF #  |  Date  |  Name  |  Position  |  Supervisor  |  Problem Description
+ * IT JRF columns:
+ *   IT JRF #  |  Date  |  Name  |  Position  |  Supervisor  |  Problem Description
  *   Recommendation Type  |  Status  |  Assigned Staff  |  Date Completed
  *
  * @param {object} data - formData collected during form flow
@@ -1255,7 +1333,7 @@ function saveTicket(data) {
     if (!sheet) {
       sheet = ss.insertSheet(ITJRF_SHEET_NAME);
       sheet.appendRow([
-        'JRF #',
+        'IT JRF #',
         'Date',
         'Name',
         'Position',
@@ -1286,7 +1364,7 @@ function saveTicket(data) {
       sheet.getRange(1, 18).setValue('Requester Email');
     }
 
-    // Auto-increment JRF number: count existing data rows + 1
+    // Auto-increment IT JRF number: count existing data rows + 1
     const lastRow = sheet.getLastRow();             // includes header
     const jrfNo   = lastRow;                        // row 1 = header → first ticket = 1
     const jrfStr  = String(jrfNo).padStart(4, '0'); // e.g. "0001"
@@ -1334,7 +1412,8 @@ function saveTicket(data) {
       Logger.log('Supervisor approval email error: ' + emailErr);
     }
 
-    Logger.log('Ticket saved: JRF #' + jrfStr);
+    _touchLastModified();
+    Logger.log('Ticket saved: IT JRF #' + jrfStr);
     return { ok: true, jrfNo: jrfStr };
   } catch (err) {
     Logger.log('saveTicket error: ' + err + '\n' + err.stack);
@@ -1599,6 +1678,7 @@ function updateTicketStatus(token, jrfNo, actionTaken, taskResult) {
       sheet.getRange(i + 1, 10).setValue(today);               // J — Date Completed
       sheet.getRange(i + 1, 12).setValue(actionTaken.trim());  // L — Action Taken
       sheet.getRange(i + 1, 13).setValue(taskResult);          // M — Task Result
+      _touchLastModified();
       return { ok: true };
     }
   }
@@ -1626,6 +1706,13 @@ function submitAssessment(token, jrfNo, assignedStaff, recommendation, assessmen
   const data = sheet.getDataRange().getValues();
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][0]) === String(jrfNo)) {
+      // Guard: only allow assessment if ticket is still awaiting assessment.
+      // Prevents duplicate director emails from double-submits or stale dashboard state.
+      const currentStatus = String(data[i][7] || '');
+      if (currentStatus !== 'Pending IT Assessment') {
+        return { ok: false, error: 'Ticket #' + jrfNo + ' is already ' + currentStatus + '. Assessment cannot be submitted again.' };
+      }
+
       sheet.getRange(i + 1, 7).setValue(recommendation);              // G — Recommendation Type
       sheet.getRange(i + 1, 8).setValue('Pending Director Approval'); // H — Status
       sheet.getRange(i + 1, 9).setValue(assignedStaff || '');         // I — Assigned Staff
@@ -1649,6 +1736,7 @@ function submitAssessment(token, jrfNo, assignedStaff, recommendation, assessmen
         Logger.log('Director approval email error: ' + emailErr);
       }
 
+      _touchLastModified();
       return { ok: true };
     }
   }
@@ -1695,8 +1783,9 @@ function handleApproval(token, action) {
     const jrfNo = String(approvalRow[1]);
     const type  = approvalRow[2]; // 'supervisor' or 'director'
 
-    // Mark token as used
+    // Mark token as used and notify dashboard that data has changed
     aSheet.getRange(rowIdx, 4).setValue(action + ' ' + new Date().toISOString());
+    _touchLastModified();
 
     // Find ticket row
     const tSheet = ss.getSheetByName(ITJRF_SHEET_NAME);
@@ -1715,8 +1804,8 @@ function handleApproval(token, action) {
       const itEmail = PropertiesService.getScriptProperties().getProperty('IT_STAFF_EMAIL');
       if (itEmail) {
         const subject = type === 'supervisor'
-          ? 'ITJRF ' + jrfNo + ': Supervisor Approved — Please Submit Assessment'
-          : 'ITJRF ' + jrfNo + ': Director Approved — Proceed with Repair';
+          ? 'IT JRF ' + jrfNo + ': Supervisor Approved — Please Submit Assessment'
+          : 'IT JRF ' + jrfNo + ': Director Approved — Proceed with Repair';
         const body = type === 'supervisor'
           ? 'Ticket ' + jrfNo + ' has been approved by the supervisor.\n\nRequester: ' + ticketRow[2] + '\nProblem: ' + ticketRow[5] + '\n\nPlease open the IT Dashboard to assign staff and submit your assessment.'
           : 'Ticket ' + jrfNo + ' has been approved by the Campus Director.\n\nRequester: ' + ticketRow[2] + '\nProblem: ' + ticketRow[5] + '\n\nPlease open the IT Dashboard to begin work and mark the ticket as Completed when done.';
@@ -1754,7 +1843,7 @@ function sendApprovalEmail(type, jrfNo, ticket) {
   let aSheet   = ss.getSheetByName(APPROVALS_SHEET_NAME);
   if (!aSheet) {
     aSheet = ss.insertSheet(APPROVALS_SHEET_NAME);
-    aSheet.appendRow(['Token', 'JRF#', 'Type', 'Used', 'Created']);
+    aSheet.appendRow(['Token', 'IT JRF#', 'Type', 'Used', 'Created']);
     aSheet.setFrozenRows(1);
   }
   // Col E (index 4) — ISO timestamp used to enforce APPROVAL_TOKEN_TTL_DAYS expiry
@@ -1776,164 +1865,102 @@ function sendApprovalEmail(type, jrfNo, ticket) {
   }
 
   // Resolve full department name for display (e.g. "Student Services Division" not "SSD")
-  const deptLookup = ticket.department ? lookupDepartment(ticket.department) : null;
-  const deptFull   = (deptLookup && deptLookup.fullName) ? deptLookup.fullName : (ticket.department || '—');
+  let departmentFull = ticket.department || '';
+  try {
+    const deptInfo = lookupDepartment(ticket.department);
+    if (deptInfo && deptInfo.fullName) departmentFull = deptInfo.fullName;
+  } catch(e) {
+    console.error('sendApprovalEmail: dept lookup failed', e);
+  }
 
   const approveUrl  = webAppUrl + '?token=' + token + '&action=approve';
   const rejectUrl   = webAppUrl + '?token=' + token + '&action=reject';
   const actionLabel = type === 'supervisor' ? 'approval' : 'approval';
   const subject     = '[PSHS ZRC] IT Job Request #' + jrfNo + ' — Awaiting your ' + actionLabel;
 
-  // ── Shared HTML snippets ──────────────────────────────────────────────────
-  const htmlHeader = `
-    <div style="background:#1a3c6e;padding:20px 28px 16px;border-radius:8px 8px 0 0;">
-      <div style="color:#f5c842;font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px;">
-        Philippine Science High School — ZRC
-      </div>
-      <div style="color:#ffffff;font-size:18px;font-weight:700;">IT Job Request Form</div>
-      <div style="color:#a8bcd4;font-size:13px;margin-top:2px;">Ticket #${jrfNo} — Action Required</div>
-    </div>`;
+  const htmlBody = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">
 
-  const htmlFooter = `
-    <div style="background:#f0f4f8;padding:14px 28px;border-radius:0 0 8px 8px;border-top:1px solid #dde3ea;">
-      <p style="margin:0;font-size:12px;color:#6b7a8d;">
-        Each link can only be used once and expires in 7 days.<br>
-        If you did not expect this email, please contact the IT Unit.
-      </p>
-      <p style="margin:8px 0 0;font-size:12px;color:#6b7a8d;">— PSHS ZRC IT Unit</p>
-    </div>`;
+  <div style="background:#1a3c6e;padding:20px 28px;border-radius:6px 6px 0 0;">
+    <div style="font-size:16px;font-weight:600;color:#ffffff;">IT Job Request — Approval Required</div>
+    <div style="font-size:11px;color:#a8bcd8;margin-top:4px;">PSHS Zamboanga Regional Campus · IT Unit</div>
+  </div>
 
-  const btnStyle = (bg, border) =>
-    `display:inline-block;padding:12px 32px;border-radius:6px;font-size:15px;font-weight:700;` +
-    `text-decoration:none;color:#ffffff;background:${bg};border:2px solid ${border};`;
+  <div style="background:#ffffff;padding:24px 28px;border:1px solid #dce4ef;border-top:none;">
 
-  // ── Build body per type ───────────────────────────────────────────────────
-  let htmlBody, plainBody;
+    <p style="margin:0 0 14px;">Dear ${recipientName},</p>
+    <p style="margin:0 0 20px;">A staff member under your supervision has submitted an IT Job Request Form that requires your ${actionLabel}.</p>
 
-  if (type === 'supervisor') {
-    htmlBody = `
-<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #dde3ea;border-radius:8px;">
-  ${htmlHeader}
-  <div style="padding:24px 28px;background:#ffffff;">
-    <p style="margin:0 0 16px;font-size:15px;color:#1a1a1a;">Dear <strong>${recipientName}</strong>,</p>
-    <p style="margin:0 0 20px;font-size:14px;color:#444;">
-      A staff member under your supervision has submitted an IT Job Request Form that requires your approval.
-    </p>
-    <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:20px;">
-      <tr style="background:#f0f4f8;">
-        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;width:38%;border-bottom:1px solid #dde3ea;">JRF #</td>
-        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${jrfNo}</td>
+    <table style="width:100%;border-collapse:collapse;background:#f7f9fc;border:1px solid #dce4ef;border-radius:4px;margin-bottom:20px;">
+      <tr style="border-bottom:1px solid #dce4ef;">
+        <td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;width:140px;">IT JRF #</td>
+        <td style="padding:9px 14px;font-size:13px;">${jrfNo}</td>
+      </tr>
+      <tr style="border-bottom:1px solid #dce4ef;">
+        <td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;">Date Submitted</td>
+        <td style="padding:9px 14px;font-size:13px;">${ticket.date || ''}</td>
+      </tr>
+      <tr style="border-bottom:1px solid #dce4ef;">
+        <td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;">Name</td>
+        <td style="padding:9px 14px;font-size:13px;">${ticket.name || ''}</td>
+      </tr>
+      <tr style="border-bottom:1px solid #dce4ef;">
+        <td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;">Position</td>
+        <td style="padding:9px 14px;font-size:13px;">${ticket.position || ''}</td>
       </tr>
       <tr>
-        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;border-bottom:1px solid #dde3ea;">Date Submitted</td>
-        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${ticket.date}</td>
-      </tr>
-      <tr style="background:#f0f4f8;">
-        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;border-bottom:1px solid #dde3ea;">Name</td>
-        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${ticket.name}</td>
-      </tr>
-      <tr>
-        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;border-bottom:1px solid #dde3ea;">Position</td>
-        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${ticket.position}</td>
-      </tr>
-      <tr style="background:#f0f4f8;">
-        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;">Department / Office</td>
-        <td style="padding:8px 12px;color:#1a1a1a;">${deptFull}</td>
+        <td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;">Department</td>
+        <td style="padding:9px 14px;font-size:13px;">${departmentFull}</td>
       </tr>
     </table>
-    <div style="background:#f8f9fb;border-left:4px solid #1a3c6e;padding:14px 16px;border-radius:0 6px 6px 0;margin-bottom:24px;">
-      <div style="font-size:11px;font-weight:700;color:#1a3c6e;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;">Problem Description</div>
-      <div style="font-size:14px;color:#1a1a1a;line-height:1.6;">${ticket.problem}</div>
-    </div>
-    <div style="text-align:center;margin-bottom:8px;">
-      <a href="${approveUrl}" style="${btnStyle('#1a7a3c','#155f30')}">✅ Approve</a>
-      &nbsp;&nbsp;&nbsp;
-      <a href="${rejectUrl}" style="${btnStyle('#b91c1c','#8f1515')}">❌ Reject</a>
-    </div>
-    <p style="text-align:center;font-size:12px;color:#6b7a8d;margin:12px 0 0;">Click a button above to respond. Links are single-use.</p>
-  </div>
-  ${htmlFooter}
-</div>`;
 
-    plainBody =
-      'Dear ' + recipientName + ',\n\n' +
-      'A staff member under your supervision has submitted an IT Job Request Form that requires your approval.\n\n' +
-      'JRF #:            ' + jrfNo            + '\n' +
-      'Date Submitted:   ' + ticket.date       + '\n' +
-      'Name:             ' + ticket.name       + '\n' +
-      'Position:         ' + ticket.position   + '\n' +
-      'Department:       ' + deptFull          + '\n\n' +
-      'PROBLEM DESCRIPTION\n' + ticket.problem + '\n\n' +
-      'APPROVE: ' + approveUrl + '\n' +
-      'REJECT:  ' + rejectUrl  + '\n\n' +
-      'Each link can only be used once and expires in 7 days.\n— PSHS ZRC IT Unit';
+    <div style="background:#f7f9fc;border:1px solid #dce4ef;border-radius:4px;padding:14px 16px;margin-bottom:20px;">
+      <div style="font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;margin-bottom:8px;">Problem Description</div>
+      <div style="font-size:13px;line-height:1.6;">${ticket.problem || ''}</div>
+    </div>
 
-  } else {
-    htmlBody = `
-<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #dde3ea;border-radius:8px;">
-  ${htmlHeader}
-  <div style="padding:24px 28px;background:#ffffff;">
-    <p style="margin:0 0 16px;font-size:15px;color:#1a1a1a;">Dear <strong>${recipientName}</strong>,</p>
-    <p style="margin:0 0 20px;font-size:14px;color:#444;">
-      The IT Unit has completed its technical assessment for the following IT Job Request and is requesting your approval to proceed with the service.
-    </p>
-    <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:20px;">
-      <tr style="background:#f0f4f8;">
-        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;width:38%;border-bottom:1px solid #dde3ea;">JRF #</td>
-        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${jrfNo}</td>
-      </tr>
+    <hr style="border:none;border-top:1px solid #e0e6ef;margin:20px 0;">
+
+    <p style="margin:0 0 14px;font-size:13px;">Please click one of the buttons below to respond:</p>
+
+    <table style="border-collapse:collapse;margin-bottom:20px;">
       <tr>
-        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;border-bottom:1px solid #dde3ea;">Requester</td>
-        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${ticket.name} — ${ticket.position}</td>
-      </tr>
-      <tr style="background:#f0f4f8;">
-        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;border-bottom:1px solid #dde3ea;">Assigned Staff</td>
-        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${ticket.assignedStaff || 'TBA'}</td>
-      </tr>
-      <tr>
-        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;border-bottom:1px solid #dde3ea;">Target Date</td>
-        <td style="padding:8px 12px;color:#1a1a1a;border-bottom:1px solid #dde3ea;">${ticket.targetDate || 'TBA'}</td>
-      </tr>
-      <tr style="background:#f0f4f8;">
-        <td style="padding:8px 12px;color:#6b7a8d;font-weight:600;">Recommendation</td>
-        <td style="padding:8px 12px;color:#1a1a1a;">${ticket.recommendation || '—'}</td>
+        <td style="padding-right:12px;">
+          <a href="${approveUrl}" style="display:inline-block;background:#1a7a4a;color:#ffffff;text-decoration:none;padding:11px 28px;border-radius:5px;font-size:13px;font-weight:600;">&#10003; Approve</a>
+        </td>
+        <td>
+          <a href="${rejectUrl}" style="display:inline-block;background:#c0392b;color:#ffffff;text-decoration:none;padding:11px 28px;border-radius:5px;font-size:13px;font-weight:600;">&#10007; Reject</a>
+        </td>
       </tr>
     </table>
-    <div style="background:#f8f9fb;border-left:4px solid #1a3c6e;padding:14px 16px;border-radius:0 6px 6px 0;margin-bottom:16px;">
-      <div style="font-size:11px;font-weight:700;color:#1a3c6e;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;">Problem Description</div>
-      <div style="font-size:14px;color:#1a1a1a;line-height:1.6;">${ticket.problem}</div>
-    </div>
-    <div style="background:#f8f9fb;border-left:4px solid #f5c842;padding:14px 16px;border-radius:0 6px 6px 0;margin-bottom:24px;">
-      <div style="font-size:11px;font-weight:700;color:#7a6000;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;">Technical Assessment</div>
-      <div style="font-size:14px;color:#1a1a1a;line-height:1.6;">${ticket.assessment || '—'}</div>
-    </div>
-    <div style="text-align:center;margin-bottom:8px;">
-      <a href="${approveUrl}" style="${btnStyle('#1a7a3c','#155f30')}">✅ Approve</a>
-      &nbsp;&nbsp;&nbsp;
-      <a href="${rejectUrl}" style="${btnStyle('#b91c1c','#8f1515')}">❌ Reject</a>
-    </div>
-    <p style="text-align:center;font-size:12px;color:#6b7a8d;margin:12px 0 0;">Click a button above to respond. Links are single-use.</p>
+
+    <p style="font-size:12px;color:#7a8a9a;line-height:1.5;margin:0;">
+      Each link can only be used once and expires after 7 days.<br>
+      If you did not expect this email, please contact the IT Unit.
+    </p>
+
   </div>
-  ${htmlFooter}
+
+  <div style="background:#f0f4fa;border:1px solid #dce4ef;border-top:none;border-radius:0 0 6px 6px;padding:12px 28px;font-size:11px;color:#8a9aaa;">
+    PSHS ZRC IT Unit &nbsp;&#183;&nbsp; This is an automated message.
+  </div>
+
 </div>`;
 
-    plainBody =
-      'Dear ' + recipientName + ',\n\n' +
-      'The IT Unit has completed its technical assessment for the following IT Job Request and is requesting your approval to proceed.\n\n' +
-      'JRF #:          ' + jrfNo                              + '\n' +
-      'Requester:      ' + ticket.name + ' — ' + ticket.position + '\n' +
-      'Assigned Staff: ' + (ticket.assignedStaff || 'TBA')    + '\n' +
-      'Target Date:    ' + (ticket.targetDate    || 'TBA')    + '\n' +
-      'Recommendation: ' + (ticket.recommendation || '—')     + '\n\n' +
-      'PROBLEM DESCRIPTION\n' + ticket.problem                + '\n\n' +
-      'TECHNICAL ASSESSMENT\n' + (ticket.assessment || '—')   + '\n\n' +
-      'APPROVE: ' + approveUrl + '\n' +
-      'REJECT:  ' + rejectUrl  + '\n\n' +
-      'Each link can only be used once and expires in 7 days.\n— PSHS ZRC IT Unit';
-  }
+  const plainBody =
+    'Dear ' + recipientName + ',\n\n' +
+    'A staff member has submitted IT Job Request #' + jrfNo + ' requiring your ' + actionLabel + '.\n\n' +
+    'Name:       ' + (ticket.name     || '') + '\n' +
+    'Position:   ' + (ticket.position || '') + '\n' +
+    'Department: ' + departmentFull          + '\n' +
+    'Date:       ' + (ticket.date     || '') + '\n\n' +
+    'Problem: ' + (ticket.problem || '') + '\n\n' +
+    'APPROVE: ' + approveUrl + '\n\n' +
+    'REJECT:  ' + rejectUrl  + '\n\n' +
+    'Each link can only be used once and expires after 7 days.\n\n' +
+    'PSHS ZRC IT Unit';
 
-  GmailApp.sendEmail(recipientEmail, subject, plainBody, { htmlBody: htmlBody });
-  Logger.log('Approval email sent (' + type + ') to ' + recipientEmail + ' for JRF ' + jrfNo);
+  MailApp.sendEmail(recipientEmail, subject, plainBody, { htmlBody: htmlBody });
+  Logger.log('Approval email sent (' + type + ') to ' + recipientEmail + ' for IT JRF ' + jrfNo);
 }
 
 /**
@@ -2107,6 +2134,30 @@ function getUserIdentity() {
 }
 
 /**
+ * Records the current timestamp in ScriptProperties whenever ticket data changes.
+ * Used by getLastModified() so the dashboard can skip re-renders when nothing has changed.
+ */
+function _touchLastModified() {
+  try {
+    PropertiesService.getScriptProperties().setProperty('DASH_LAST_MODIFIED', new Date().toISOString());
+  } catch(e) {
+    console.error('_touchLastModified error: ' + e);
+  }
+}
+
+/**
+ * Returns the ISO timestamp of the last ticket data change.
+ * Dashboard calls this on auto-refresh; if the value matches the last-seen value,
+ * it skips the full getTickets() call — saving a full sheet read every 2 minutes.
+ * @param {string} token - Dashboard session token
+ * @returns {string} ISO timestamp string, or '' if never set
+ */
+function getLastModified(token) {
+  _requireDashboardAuth(token);
+  return PropertiesService.getScriptProperties().getProperty('DASH_LAST_MODIFIED') || '';
+}
+
+/**
  * Returns the signed-in user's email and whether they are an authorized IT staff member.
  * Called from Dashboard.html on page load.
  */
@@ -2158,7 +2209,7 @@ function getTicketUpdates(email) {
       });
     }
 
-    // Sort by JRF # descending, return top 5
+    // Sort by IT JRF # descending, return top 5
     results.sort(function(a, b) { return Number(b.jrfNo) - Number(a.jrfNo); });
     return results.slice(0, 5);
   } catch (err) {
@@ -2172,7 +2223,7 @@ function getTicketUpdates(email) {
  * Used by the My Tickets panel in the chatbot UI.
  *
  * @param {string} email - Requester's Google account email
- * @returns {Array} All tickets for this email, sorted by JRF # descending
+ * @returns {Array} All tickets for this email, sorted by IT JRF # descending
  */
 function getMyTickets(email) {
   try {
@@ -2311,6 +2362,7 @@ function updateTicketDetails(token, jrfNo, name, position, supervisor, problem) 
       sheet.getRange(i + 1, 4).setValue((position   || '').trim()); // D — Position
       sheet.getRange(i + 1, 5).setValue((supervisor || '').trim()); // E — Supervisor
       sheet.getRange(i + 1, 6).setValue((problem    || '').trim()); // F — Problem
+      _touchLastModified();
       return { ok: true };
     }
   }
@@ -2331,6 +2383,7 @@ function assignStaff(token, jrfNo, staffName) {
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][0]) === String(jrfNo)) {
       sheet.getRange(i + 1, 9).setValue(staffName); // I — Assigned Staff
+      _touchLastModified();
       return true;
     }
   }
@@ -2441,7 +2494,7 @@ function generateFormPdf(authToken, jrfNo) {
   }
 
   // Write ticket values — top-left cell of each merged range
-  writeCell('O6',  ticket.jrfNumber);                        // JRF #:      O6:Q7
+  writeCell('O6',  ticket.jrfNumber);                        // IT JRF #:   O6:Q7
   writeCell('E6',  ticket.name,           true);            // Name:       E6:L6       bold
   writeCell('E7',  ticket.position);                        // Position:   E7:L7
   writeCell('E8',  ticket.supervisor,     true);            // Supervisor: E8:L8       bold
@@ -2565,7 +2618,7 @@ function sendOverdueReminders() {
           itEmail,
           'Overdue IT Ticket — ' + jrfNo,
           'The following IT Job Request is overdue:\n\n' +
-          'JRF #:        ' + jrfNo      + '\n' +
+          'IT JRF #:     ' + jrfNo      + '\n' +
           'Requester:    ' + name        + '\n' +
           'Problem:      ' + problem     + '\n' +
           'Target Date:  ' + Utilities.formatDate(target, Session.getScriptTimeZone(), 'MM/dd/yyyy') + '\n' +
@@ -2649,6 +2702,54 @@ function archiveOldTickets() {
   Logger.log('archiveOldTickets: archived ' + archived + ' ticket(s)');
 }
 
+// =============================================================================
+// setupTriggers() — one-time utility to create all required time-driven triggers
+// =============================================================================
+
+/**
+ * Creates time-driven triggers for the three maintenance functions if they do not
+ * already exist. Run this once from the Apps Script editor:
+ *   Functions dropdown → setupTriggers → Run
+ *
+ * Triggers created (matching CLAUDE.md §12):
+ *   sendOverdueReminders  — daily,   8:00–9:00 AM
+ *   cleanupApprovalTokens — weekly,  Monday 2:00–3:00 AM
+ *   archiveOldTickets     — monthly, 1st of month 3:00–4:00 AM
+ *
+ * Safe to run multiple times — existing triggers are not duplicated.
+ */
+function setupTriggers() {
+  const existing = ScriptApp.getProjectTriggers().map(function(t) { return t.getHandlerFunction(); });
+  const results  = [];
+
+  if (!existing.includes('sendOverdueReminders')) {
+    ScriptApp.newTrigger('sendOverdueReminders')
+      .timeBased().everyDays(1).atHour(8).create();
+    results.push('Created: sendOverdueReminders (daily 8–9 AM)');
+  } else {
+    results.push('Already exists: sendOverdueReminders');
+  }
+
+  if (!existing.includes('cleanupApprovalTokens')) {
+    ScriptApp.newTrigger('cleanupApprovalTokens')
+      .timeBased().onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(2).create();
+    results.push('Created: cleanupApprovalTokens (Monday 2–3 AM)');
+  } else {
+    results.push('Already exists: cleanupApprovalTokens');
+  }
+
+  if (!existing.includes('archiveOldTickets')) {
+    ScriptApp.newTrigger('archiveOldTickets')
+      .timeBased().onMonthDay(1).atHour(3).create();
+    results.push('Created: archiveOldTickets (1st of month 3–4 AM)');
+  } else {
+    results.push('Already exists: archiveOldTickets');
+  }
+
+  Logger.log('setupTriggers:\n' + results.join('\n'));
+  return results;
+}
+
 /**
  * DEBUG: Writes labelled test values into every mapped cell of the Template sheet.
  * Run this once from the Apps Script editor, then open the Template tab in the
@@ -2662,7 +2763,7 @@ function debugTemplateMap() {
   if (!template) { Logger.log('Template sheet not found'); return; }
 
   const writes = {
-    'O6':  '[JRF#] O6',
+    'O6':  '[IT JRF#] O6',
     'E6':  '[Name] E6',
     'E7':  '[Position] E7',
     'E8':  '[Supervisor] E8',
@@ -2752,7 +2853,7 @@ function testApprovalEmail() {
     MailApp.sendEmail(
       testEmail,
       'TEST: IT Job Request Approval Email',
-      'This is a test approval email from the PSHS ZRC ITJRF Chatbot.\n\n' +
+      'This is a test approval email from the PSHS ZRC IT JRF Chatbot.\n\n' +
       'If you received this, email sending is working correctly.\n\n' +
       'Test APPROVE link: ' + approveUrl + '\n' +
       'Test REJECT link:  ' + rejectUrl  + '\n\n' +

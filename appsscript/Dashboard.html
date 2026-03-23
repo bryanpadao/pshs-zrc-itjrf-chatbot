@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PSHS ZRC IT Dashboard</title>
+  <title>PSHS-ZRC IT Unit Dashboard</title>
   <link rel="icon" type="image/png" href="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w64">
   <!-- Login flicker fix + theme restore (DESIGN.md §7-C) — both run before first paint -->
   <script>
@@ -68,7 +68,7 @@
     body {
       font-family: 'Inter', sans-serif;
       background-color: var(--bg-base);
-      background-image: url('https://drive.google.com/thumbnail?id=1YYOXIIiN3t3uY6SjbcwolH2zFOo_4PLE&sz=w1920');
+      background-image: url('https://drive.google.com/thumbnail?id=1rSPTtHpvS4kw_9AAOGDQk_FnnLpa7SXC&sz=w1920');
       background-size: cover;
       background-position: center;
       background-attachment: fixed;
@@ -316,7 +316,8 @@
     .modal-summary-label  { font-size: 10px; color: var(--text-muted); text-transform: uppercase;
                             letter-spacing: 0.5px; margin-bottom: 4px; }
     .modal-summary-name   { font-size: 13px; font-weight: 500; color: var(--text-pri); margin-bottom: 3px; }
-    .modal-summary-desc   { font-size: 11px; color: var(--text-sec); line-height: 1.5; }
+    .modal-summary-desc   { font-size: 11px; color: var(--text-sec); line-height: 1.5;
+                            max-height: 96px; overflow-y: auto; white-space: pre-wrap; }
 
     /* Two-column field row (DESIGN.md §4-AE) */
     .modal-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -445,7 +446,7 @@
 <div id="access-denied-overlay" style="display:none;position:fixed;inset:0;background:var(--bg-base);z-index:9999;align-items:center;justify-content:center;">
   <div style="background:var(--bg-card);border:1px solid var(--border-mid);border-radius:14px;padding:40px 48px;width:100%;max-width:420px;box-shadow:0 16px 48px rgba(0,0,0,.5);text-align:center;">
     <img src="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w200" alt="PSHS ZRC Logo" style="height:56px;width:auto;margin-bottom:16px;">
-    <h2 style="color:var(--text-pri);font-size:17px;font-weight:600;margin-bottom:8px;" id="access-title">IT Dashboard</h2>
+    <h2 style="color:var(--text-pri);font-size:17px;font-weight:600;margin-bottom:8px;" id="access-title">IT Unit Dashboard</h2>
     <p style="font-size:13px;color:var(--text-sec);margin-bottom:8px;" id="access-message">Checking authorization…</p>
     <p style="font-size:12px;color:var(--text-muted);" id="access-email"></p>
   </div>
@@ -458,7 +459,7 @@
     <div class="logo-block">
       <img src="https://drive.google.com/thumbnail?id=14RNRQVTqVzwLduk-In17y7n_SQ6BGUXz&sz=w200" alt="PSHS ZRC" class="logo-img">
       <div>
-        <div class="logo-name">PSHS ZRC</div>
+        <div class="logo-name">PSHS-ZRC</div>
         <div class="logo-sub">IT Unit</div>
       </div>
     </div>
@@ -505,7 +506,7 @@
   <div class="toolbar">
     <div class="search-box">
       <span class="search-icon">🔍</span>
-      <input class="search-input" type="text" id="search-input" placeholder="Search by JRF #, name, problem, staff…" oninput="applySearch()">
+      <input class="search-input" type="text" id="search-input" placeholder="Search by IT JRF #, name, problem, staff…" oninput="applySearch()">
     </div>
     <div class="filter-chips">
       <button class="chip active-chip" onclick="setFilter('all', this)">All</button>
@@ -526,7 +527,7 @@
       <table id="ticket-table" style="display:none;">
         <thead>
           <tr>
-            <th class="sortable" onclick="sortTable('jrfNo', this)">JRF #<span class="sort-icon"></span></th>
+            <th class="sortable" onclick="sortTable('jrfNo', this)">IT JRF #<span class="sort-icon"></span></th>
             <th class="sortable" onclick="sortTable('date', this)">Date<span class="sort-icon"></span></th>
             <th>Name</th>
             <th>Position</th>
@@ -596,7 +597,7 @@
         <table>
           <thead>
             <tr>
-              <th>JRF #</th>
+              <th>IT JRF #</th>
               <th>Date</th>
               <th>Name</th>
               <th>Problem</th>
@@ -880,10 +881,21 @@
       .getTickets(dashToken);
   }
 
-  // Auto-refresh every 60 seconds to pick up approval status changes
+  // Auto-refresh every 2 minutes. Calls getLastModified() first — skips the full
+  // getTickets() sheet read if nothing has changed since the last render.
+  var lastSeenModified = '';
   setInterval(function() {
-    if (sessionStorage.getItem('dashAuthorized') === '1') loadTickets();
-  }, 60000);
+    if (sessionStorage.getItem('dashAuthorized') !== '1') return;
+    google.script.run
+      .withSuccessHandler(function(ts) {
+        if (ts && ts !== lastSeenModified) {
+          lastSeenModified = ts;
+          loadTickets();
+        }
+      })
+      .withFailureHandler(function() { /* silent — full refresh on next cycle */ })
+      .getLastModified(dashToken);
+  }, 120000);
 
   function updateStats(tickets) {
     const active    = tickets.filter(t => t.status !== 'Completed' && t.status !== 'Rejected').length;
@@ -1019,7 +1031,7 @@
 
     // Populate ticket summary card
     document.getElementById('assess-summary-name').textContent = (t ? '#' + t.jrfNo + ' — ' + t.name : jrfNo);
-    document.getElementById('assess-summary-desc').textContent = (t && t.problem) ? t.problem.substring(0, 120) + (t.problem.length > 120 ? '\u2026' : '') : '—';
+    document.getElementById('assess-summary-desc').textContent = (t && t.problem) ? t.problem : '—';
     document.getElementById('assess-staff').value                  = (t && t.assignedStaff)     || '';
     document.getElementById('assess-service-location').value       = (t && t.serviceLocation)   || '';
     document.getElementById('assess-recommendation').value         = (t && t.recType)           || '';
@@ -1049,7 +1061,10 @@
     assessJrfNo = null;
   }
 
+  var assessSubmitting = false;   // prevents double-submit from rapid clicks
+
   function submitAssess() {
+    if (assessSubmitting) return;
     const assessment      = document.getElementById('assess-text').value.trim();
     const serviceLocation = document.getElementById('assess-service-location').value;
     const recommendation  = document.getElementById('assess-recommendation').value;
@@ -1085,11 +1100,13 @@
     if (!valid) return;
 
     const jrfNo = assessJrfNo;
+    assessSubmitting = true;
     closeAssessModal();
     showToast('Submitting assessment for ' + jrfNo + '…');
 
     google.script.run
       .withSuccessHandler(function(result) {
+        assessSubmitting = false;
         if (result && result.ok) {
           const t = allTickets.find(x => x.jrfNo === jrfNo);
           if (t) {
@@ -1108,7 +1125,7 @@
           showToast('Error: ' + (result && result.error ? result.error : 'Could not submit assessment.'));
         }
       })
-      .withFailureHandler(onServerError)
+      .withFailureHandler(function(err) { assessSubmitting = false; onServerError(err); })
       .submitAssessment(dashToken, jrfNo, assignedStaff, recommendation, assessment, targetDate, othersDesc, serviceLocation);
   }
 
@@ -1120,7 +1137,7 @@
 
     // Populate ticket summary card
     document.getElementById('complete-summary-name').textContent = (t ? '#' + t.jrfNo + ' \u2014 ' + t.name : jrfNo);
-    document.getElementById('complete-summary-desc').textContent = (t && t.problem) ? t.problem.substring(0, 120) + (t.problem.length > 120 ? '\u2026' : '') : '—';
+    document.getElementById('complete-summary-desc').textContent = (t && t.problem) ? t.problem : '—';
     document.getElementById('complete-action').value = (t && t.actionTaken) || '';
     document.querySelectorAll('input[name="complete-task-result"]').forEach(function(r) {
       r.checked = t && r.value === t.taskResult;
@@ -1194,7 +1211,7 @@
         const url  = URL.createObjectURL(blob);
         const a    = document.createElement('a');
         a.href     = url;
-        a.download = 'ITJRF-' + jrfNo + '.pdf';
+        a.download = 'IT-JRF-' + jrfNo + '.pdf';
         a.click();
         URL.revokeObjectURL(url);
         showToast('PDF downloaded for ' + jrfNo + '.');
@@ -1231,7 +1248,7 @@
 
     // Populate ticket summary card
     document.getElementById('edit-summary-name').textContent = (t ? '#' + t.jrfNo + ' \u2014 ' + t.name : jrfNo);
-    document.getElementById('edit-summary-desc').textContent = (t && t.problem) ? t.problem.substring(0, 120) + (t.problem.length > 120 ? '\u2026' : '') : '—';
+    document.getElementById('edit-summary-desc').textContent = (t && t.problem) ? t.problem : '—';
     document.getElementById('edit-name').value       = (t && t.name)       || '';
     document.getElementById('edit-position').value   = (t && t.position)   || '';
     document.getElementById('edit-supervisor').value = (t && t.supervisor) || '';
