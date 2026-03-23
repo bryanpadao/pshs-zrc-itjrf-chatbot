@@ -29,8 +29,6 @@ const RECOMMENDATION_TYPES = [
   'Software Development',
   'Software Modification',
   'Software Installation',
-  'In-Campus Repair',
-  'External Service Provider Repair',
   'Others, Repair',
 ];
 
@@ -81,75 +79,37 @@ function sanitizeInput(text) {
  * Throws if the limit is exceeded.
  */
 function checkGlobalRateLimit() {
-  const cache  = CacheService.getScriptCache();
-  const key    = 'rate_limit_submissions';
-  const now    = Date.now();
-  const window = 3600000; // 1 hour in ms
+  const lock = LockService.getScriptLock();
+  lock.waitLock(5000);
+  try {
+    const cache  = CacheService.getScriptCache();
+    const key    = 'rate_limit_submissions';
+    const now    = Date.now();
+    const window = 3600000; // 1 hour in ms
 
-  let timestamps = [];
-  const raw = cache.get(key);
-  if (raw) { try { timestamps = JSON.parse(raw); } catch (e) { timestamps = []; } }
+    let timestamps = [];
+    const raw = cache.get(key);
+    if (raw) { try { timestamps = JSON.parse(raw); } catch (e) { timestamps = []; } }
 
-  // Discard timestamps outside the rolling window
-  timestamps = timestamps.filter(function(ts) { return now - ts < window; });
+    // Discard timestamps outside the rolling window
+    timestamps = timestamps.filter(function(ts) { return now - ts < window; });
 
-  if (timestamps.length >= MAX_SUBMISSIONS_PER_HOUR) {
-    throw new Error('Submission limit reached. Please try again later.');
+    if (timestamps.length >= MAX_SUBMISSIONS_PER_HOUR) {
+      throw new Error('Submission limit reached. Please try again later.');
+    }
+
+    timestamps.push(now);
+    cache.put(key, JSON.stringify(timestamps), 3660); // cache for slightly over 1 hour
+  } finally {
+    lock.releaseLock();
   }
-
-  timestamps.push(now);
-  cache.put(key, JSON.stringify(timestamps), 3660); // cache for slightly over 1 hour
 }
 
-/**
- * Authenticates an IT staff member for dashboard access.
- * Validates email against IT_STAFF_EMAIL script property and password against
- * DASHBOARD_PASSWORD script property.
- * Returns { ok: true, token, email } on success, or { ok: false, error } on failure.
- */
-function dashboardLogin(email, password) {
-  if (!email || !password) return { ok: false, error: 'Email and password are required.' };
-
-  const props         = PropertiesService.getScriptProperties();
-  const allowedEmails = (props.getProperty('IT_STAFF_EMAIL') || '')
-    .split(',')
-    .map(function(e) { return e.trim().toLowerCase(); })
-    .filter(Boolean);
-  const validPassword = props.getProperty('DASHBOARD_PASSWORD') || '';
-
-  if (!allowedEmails.includes(email.toLowerCase().trim())) {
-    return { ok: false, error: 'Unrecognized email address.' };
-  }
-  if (!validPassword || password !== validPassword) {
-    return { ok: false, error: 'Incorrect password.' };
-  }
-
-  const token = Utilities.getUuid();
-  CacheService.getScriptCache().put('dash_session_' + token, email.toLowerCase().trim(), DASHBOARD_SESSION_TTL);
-  Logger.log('Dashboard login: ' + email);
-  return { ok: true, token: token, email: email.toLowerCase().trim() };
-}
-
-/**
- * Returns the email address associated with a dashboard session token, or null if invalid/expired.
- */
-function validateDashboardSession(token) {
-  if (!token) return null;
-  return CacheService.getScriptCache().get('dash_session_' + token);
-}
-
-/**
- * Invalidates a dashboard session token (logout).
- */
-function dashboardLogout(token) {
-  if (token) CacheService.getScriptCache().remove('dash_session_' + token);
-}
 
 /**
  * Internal auth guard for dashboard functions.
  * Validates that the currently signed-in Google account is an authorized IT staff member.
  * Throws 'Unauthorized' if not in the IT_STAFF_EMAIL list.
- * The token parameter is kept for backward compatibility but is no longer checked.
  */
 function _requireDashboardAuth(token) {
   try {
@@ -162,10 +122,7 @@ function _requireDashboardAuth(token) {
     }
   } catch (err) {
     if (err.message && err.message.startsWith('Unauthorized')) throw err;
-    // Session.getActiveUser() throws in some contexts — fall back to token check
-    if (!validateDashboardSession(token)) {
-      throw new Error('Session expired. Please log in again.');
-    }
+    throw new Error('Session expired. Please log in again.');
   }
 }
 
@@ -190,60 +147,25 @@ function doGet(e) {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
-/**
- * Receives POST from the chat UI.
- * Body: { message: string, session: object }
- * Returns: { reply: string, session: object }
- */
-function doPost(e) {
-  try {
-    const params  = JSON.parse(e.postData.contents);
-    const message = (params.message || '').trim();
-    const session = params.session || {};
 
-    if (!message) {
-      return jsonResponse({ reply: 'Please type a message.', session });
-    }
-
-    // Route based on current session state
-    let result;
-    if (session.state === 'collecting') {
-      result = handleFormStep(message, session);
-    } else if (session.state === 'confirm') {
-      result = handleConfirm(message, session);
-    } else if (session.state === 'confirm_name') {
-      result = handleConfirmName(message, session);
-    } else if (session.state === 'cctv_letter_check') {
-      result = handleCctvLetterCheck(message, session);
-    } else {
-      result = handleChat(message, session);
-    }
-
-    return jsonResponse(result);
-  } catch (err) {
-    Logger.log('doPost error: ' + err + '\n' + err.stack);
-    return jsonResponse({
-      reply: 'Sorry, an unexpected error occurred. Please try again.',
-      session: {},
-    });
-  }
-}
 function processChat(params) {
   // Sanitize raw input
   const message = sanitizeInput(params.message || '');
 
   // Load server-side session from cache (or create a new one)
   const cache     = CacheService.getScriptCache();
-  let   currentId = params.sessionId || '';
-  let   session   = {};
+  const currentId = params.sessionId || '';
 
-  if (currentId) {
-    const stored = cache.get('chat_session_' + currentId);
-    if (stored) { try { session = JSON.parse(stored); } catch (e) { session = {}; } }
-  } else {
-    // Issue a new session ID for this conversation
-    currentId = Utilities.getUuid();
+  // Reject invalid session IDs — all valid sessions use UUID v4 format.
+  // Cache key namespaces: chat_session_ | rate_limit_submissions | rate_user_ | dash_session_
+  // No prefix overlap between namespaces prevents cross-key collision.
+  if (!currentId || !/^[0-9a-f-]{36}$/i.test(currentId)) {
+    return { reply: 'Invalid session. Please refresh the page.', submitted: false };
   }
+
+  let session = {};
+  const stored = cache.get('chat_session_' + currentId);
+  if (stored) { try { session = JSON.parse(stored); } catch (e) { session = {}; } }
 
   // Pre-fill identity fields from Google account lookup on first message.
   // Only applied once (when session is new and userIdentity is provided).
@@ -517,47 +439,10 @@ function handleFormStep(message, session) {
 
   // --- Gibberish detection (name / position / department / supervisor only) ---
   // Description is free-form text, so gibberish detection is skipped for it.
-  const GIBBERISH_JOKES = [
-    'Alright, I give up trying to decode keyboard poetry. 😄 Please start a new conversation when you\'re ready to type normally — I\'ll be here!',
-    'Three strikes and the keyboard wins! 🎹 My gibberish translator is currently on vacation. Start a new conversation when you\'re ready!',
-    'I think your cat may have walked across the keyboard one too many times. 🐱 Let\'s start fresh — begin a new conversation when you\'re ready!',
-  ];
-  const STEP_LABELS = {
-    name:       'full name',
-    position:   'position or designation',
-    department: 'department or office',
-    supervisor: 'immediate supervisor',
-  };
-  if (STEP_LABELS[step.key] && isGibberish(message)) {
-    session.strikeCount = (session.strikeCount || 0) + 1;
-    if (session.strikeCount >= 3) {
-      // End the conversation with a joke after 3 consecutive gibberish inputs
-      const joke = GIBBERISH_JOKES[Math.floor(Math.random() * GIBBERISH_JOKES.length)];
-      return { reply: joke, session: {}, submitted: true };
-    }
-    const label = STEP_LABELS[step.key];
-    const warnings = [
-      'That doesn\'t look like a valid ' + label + '. Could you please try again?\n\n' + step.prompt,
-      'Hmm, that still doesn\'t look right. One more like that and I\'ll have to give up on us! 😅\n\n' + step.prompt,
-    ];
-    return { reply: warnings[session.strikeCount - 1], session };
-  }
   // Reset strike counter once the user types something valid
   session.strikeCount = 0;
 
-  // Validate recommendation type (must be 1–10 or exact name)
-  if (step.key === 'rec_type') {
-    const resolved = resolveRecType(message);
-    if (!resolved) {
-      return {
-        reply:
-          'Please reply with a number (1–10) or the exact recommendation type name.\n\n' +
-          RECOMMENDATION_TYPES.map((t, i) => `${i + 1}. ${t}`).join('\n'),
-        session,
-      };
-    }
-    session.formData[step.key] = resolved;
-  } else if (step.key === 'name') {
+  if (step.key === 'name') {
     session.formData[step.key] = message;
     // Look up the employee in the Employees sheet (exact match first, then fuzzy).
     // If a match is found, pause and ask the user to confirm before auto-filling.
@@ -1320,9 +1205,8 @@ function saveTicket(data) {
             'If this is urgent, please contact the IT unit directly.',
         };
       }
-      // TTL = seconds until midnight PHT (UTC+8)
-      const nowPht = Math.floor(Date.now() / 1000) + 28800;
-      const ttl    = Math.floor(86400 - (nowPht % 86400));
+      // TTL = seconds until midnight PHT (UTC+8); minimum 60 s guards against zero at midnight
+      const ttl = Math.max(60, Math.floor(86400 - ((Date.now() / 1000 + 28800) % 86400)));
       CacheService.getScriptCache().put(userRateKey, String(todayCount + 1), ttl);
     }
 
@@ -1364,37 +1248,45 @@ function saveTicket(data) {
       sheet.getRange(1, 18).setValue('Requester Email');
     }
 
-    // Auto-increment IT JRF number: count existing data rows + 1
-    const lastRow = sheet.getLastRow();             // includes header
-    const jrfNo   = lastRow;                        // row 1 = header → first ticket = 1
-    const jrfStr  = String(jrfNo).padStart(4, '0'); // e.g. "0001"
+    // Auto-increment IT JRF number + appendRow — locked to prevent duplicate JRF numbers
+    // under concurrent submissions.
+    const jrfLock = LockService.getScriptLock();
+    jrfLock.waitLock(10000);
+    let jrfStr, today;
+    try {
+      const lastRow = sheet.getLastRow();             // includes header
+      const jrfNo   = lastRow;                        // row 1 = header → first ticket = 1
+      jrfStr  = String(jrfNo).padStart(4, '0');       // e.g. "0001"
 
-    const today = Utilities.formatDate(
-      new Date(),
-      Session.getScriptTimeZone(),
-      'yyyy-MM-dd'
-    );
+      today = Utilities.formatDate(
+        new Date(),
+        Session.getScriptTimeZone(),
+        'yyyy-MM-dd'
+      );
 
-    sheet.appendRow([
-      jrfStr,
-      today,
-      data.name           || '',
-      data.position       || '',
-      data.supervisor     || '',
-      data.description    || '',
-      data.recType        || '',  // Recommendation Type — pre-filled for known types; otherwise set by IT staff
-      'Pending Supervisor Approval', // default Status
-      '',                           // Assigned Staff — filled by IT staff later
-      '',                           // Date Completed — filled by IT staff later
-      '',                           // Assessment — filled by IT staff later
-      '',                           // Action Taken — filled by IT staff later
-      '',                           // Task Result — filled by IT staff later
-      '',                           // Target Date — filled by IT staff later
-      '',                           // Others Description — filled by IT staff later
-      '',                           // Service Location — filled by IT staff later
-      data.rawDescription || '',    // col Q — raw description before formal paraphrase
-      data.userEmail      || '',    // col R — requester Google account email
-    ]);
+      sheet.appendRow([
+        jrfStr,
+        today,
+        data.name           || '',
+        data.position       || '',
+        data.supervisor     || '',
+        data.description    || '',
+        data.recType        || '',  // Recommendation Type — pre-filled for known types; otherwise set by IT staff
+        'Pending Supervisor Approval', // default Status
+        '',                           // Assigned Staff — filled by IT staff later
+        '',                           // Date Completed — filled by IT staff later
+        '',                           // Assessment — filled by IT staff later
+        '',                           // Action Taken — filled by IT staff later
+        '',                           // Task Result — filled by IT staff later
+        '',                           // Target Date — filled by IT staff later
+        '',                           // Others Description — filled by IT staff later
+        '',                           // Service Location — filled by IT staff later
+        data.rawDescription || '',    // col Q — raw description before formal paraphrase
+        data.userEmail      || '',    // col R — requester Google account email
+      ]);
+    } finally {
+      jrfLock.releaseLock();
+    }
 
     // Send supervisor approval email
     try {
@@ -1441,9 +1333,9 @@ function saveTicket(data) {
  */
 function submitFormTicket(params) {
   try {
-    // 1. Validate identity
-    const id = params.userIdentity;
-    if (!id || !id.email || !id.name) {
+    // 1. Resolve identity server-side — params.userIdentity is ignored to prevent spoofing
+    const id = getUserIdentity();
+    if (id.error || !id.email || !id.name) {
       return { error: 'no_identity', message: 'Identity not verified. Please reload the page and try again.' };
     }
 
@@ -1531,24 +1423,6 @@ function submitFormTicket(params) {
 // Helpers
 // =============================================================================
 
-/**
- * Resolves a user's recommendation type answer (number 1-10 or text) to the
- * canonical name from RECOMMENDATION_TYPES.
- */
-function resolveRecType(answer) {
-  const trimmed = answer.trim();
-
-  // Numeric selection
-  const num = parseInt(trimmed, 10);
-  if (!isNaN(num) && num >= 1 && num <= RECOMMENDATION_TYPES.length) {
-    return RECOMMENDATION_TYPES[num - 1];
-  }
-
-  // Partial text match (case-insensitive)
-  const lower = trimmed.toLowerCase();
-  const found = RECOMMENDATION_TYPES.find(t => t.toLowerCase().includes(lower));
-  return found || null;
-}
 
 /**
  * Detects keyboard-mashing / gibberish input.
@@ -1783,11 +1657,8 @@ function handleApproval(token, action) {
     const jrfNo = String(approvalRow[1]);
     const type  = approvalRow[2]; // 'supervisor' or 'director'
 
-    // Mark token as used and notify dashboard that data has changed
-    aSheet.getRange(rowIdx, 4).setValue(action + ' ' + new Date().toISOString());
-    _touchLastModified();
-
-    // Find ticket row
+    // Find and validate the ticket BEFORE consuming the token — prevents the token being
+    // spent when the ticket lookup fails (e.g. sheet error or mismatched JRF #).
     const tSheet = ss.getSheetByName(ITJRF_SHEET_NAME);
     const tData  = tSheet.getDataRange().getValues();
     let tRowIdx = -1, ticketRow = null;
@@ -1795,6 +1666,10 @@ function handleApproval(token, action) {
       if (String(tData[i][0]) === jrfNo) { tRowIdx = i + 1; ticketRow = tData[i]; break; }
     }
     if (!ticketRow) return approvalHtmlPage('Error', 'Ticket not found: ' + jrfNo);
+
+    // Ticket confirmed — now mark token as used and notify dashboard
+    aSheet.getRange(rowIdx, 4).setValue(action + ' ' + new Date().toISOString());
+    _touchLastModified();
 
     if (action === 'approve') {
       const newStatus = type === 'supervisor' ? 'Pending IT Assessment' : 'In Progress';
@@ -1875,8 +1750,7 @@ function sendApprovalEmail(type, jrfNo, ticket) {
 
   const approveUrl  = webAppUrl + '?token=' + token + '&action=approve';
   const rejectUrl   = webAppUrl + '?token=' + token + '&action=reject';
-  const actionLabel = type === 'supervisor' ? 'approval' : 'approval';
-  const subject     = '[PSHS ZRC] IT Job Request #' + jrfNo + ' — Awaiting your ' + actionLabel;
+  const subject     = '[PSHS ZRC] IT Job Request #' + jrfNo + ' — Awaiting your approval';
 
   const htmlBody = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">
 
@@ -1888,7 +1762,7 @@ function sendApprovalEmail(type, jrfNo, ticket) {
   <div style="background:#ffffff;padding:24px 28px;border:1px solid #dce4ef;border-top:none;">
 
     <p style="margin:0 0 14px;">Dear ${recipientName},</p>
-    <p style="margin:0 0 20px;">A staff member under your supervision has submitted an IT Job Request Form that requires your ${actionLabel}.</p>
+    <p style="margin:0 0 20px;">A staff member under your supervision has submitted an IT Job Request Form that requires your approval.</p>
 
     <table style="width:100%;border-collapse:collapse;background:#f7f9fc;border:1px solid #dce4ef;border-radius:4px;margin-bottom:20px;">
       <tr style="border-bottom:1px solid #dce4ef;">
@@ -1948,7 +1822,7 @@ function sendApprovalEmail(type, jrfNo, ticket) {
 
   const plainBody =
     'Dear ' + recipientName + ',\n\n' +
-    'A staff member has submitted IT Job Request #' + jrfNo + ' requiring your ' + actionLabel + '.\n\n' +
+    'A staff member has submitted IT Job Request #' + jrfNo + ' requiring your approval.\n\n' +
     'Name:       ' + (ticket.name     || '') + '\n' +
     'Position:   ' + (ticket.position || '') + '\n' +
     'Department: ' + departmentFull          + '\n' +
@@ -2184,14 +2058,16 @@ function getDashboardUser() {
  */
 function getTicketUpdates(email) {
   try {
-    if (!email) return [];
+    // email parameter ignored — derived server-side
+    const resolvedEmail = Session.getActiveUser().getEmail();
+    if (!resolvedEmail) return [];
     const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
     const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
     if (!sheet) return [];
 
     const data    = sheet.getDataRange().getValues();
     const results = [];
-    const emailLower = email.toLowerCase().trim();
+    const emailLower = resolvedEmail.toLowerCase().trim();
 
     for (let i = 1; i < data.length; i++) {
       const rowEmail = String(data[i][17] || '').toLowerCase().trim(); // col R
@@ -2227,14 +2103,16 @@ function getTicketUpdates(email) {
  */
 function getMyTickets(email) {
   try {
-    if (!email) return [];
+    // email parameter ignored — derived server-side
+    const resolvedEmail = Session.getActiveUser().getEmail();
+    if (!resolvedEmail) return [];
     const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
     const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
     if (!sheet) return [];
 
     const data    = sheet.getDataRange().getValues();
     const results = [];
-    const emailLower = email.toLowerCase().trim();
+    const emailLower = resolvedEmail.toLowerCase().trim();
 
     for (let i = 1; i < data.length; i++) {
       const rowEmail = String(data[i][17] || '').toLowerCase().trim(); // col R
