@@ -1738,6 +1738,27 @@ function submitAssessment(token, jrfNo, assignedStaff, recommendation, assessmen
       sheet.getRange(i + 1, 15).setValue(othersDescription  || '');   // O — Others Description
       sheet.getRange(i + 1, 16).setValue(serviceLocation   || '');   // P — Service Location
 
+      // Look up requester's department code from Employees sheet (not stored in Tickets sheet).
+      // sendApprovalEmail() calls lookupDepartment(ticket.department) to resolve the full name.
+      let deptCode = '';
+      const requesterEmail = String(data[i][17] || '').toLowerCase().trim(); // col R
+      if (requesterEmail) {
+        try {
+          const empSheet = ss.getSheetByName('Employees');
+          if (empSheet) {
+            const empData = empSheet.getDataRange().getValues();
+            for (let j = 1; j < empData.length; j++) {
+              if (String(empData[j][3] || '').toLowerCase().trim() === requesterEmail) {
+                deptCode = String(empData[j][2] || '');  // col C — abbreviated code e.g. "SSD"
+                break;
+              }
+            }
+          }
+        } catch (deptErr) {
+          console.error('submitAssessment: dept lookup failed', deptErr);
+        }
+      }
+
       try {
         sendApprovalEmail('director', jrfNo, {
           name:           data[i][2],
@@ -1748,6 +1769,8 @@ function submitAssessment(token, jrfNo, assignedStaff, recommendation, assessmen
           assignedStaff:  assignedStaff || '',
           assessment:     assessment.trim(),
           targetDate:     targetDate || '',
+          date:           data[i][1] ? Utilities.formatDate(new Date(data[i][1]), Session.getScriptTimeZone(), 'yyyy-MM-dd') : '',  // col B — submission date
+          department:     deptCode,    // col C of Employees sheet — abbreviated dept code
         });
       } catch (emailErr) {
         Logger.log('Director approval email error: ' + emailErr);
@@ -1958,8 +1981,8 @@ function handleApproval(token, action) {
       const itEmail = PropertiesService.getScriptProperties().getProperty('IT_STAFF_EMAIL');
       if (itEmail) {
         const subject = type === 'supervisor'
-          ? 'IT JRF ' + jrfNo + ': Supervisor Approved — Please Submit Assessment'
-          : 'IT JRF ' + jrfNo + ': Director Approved — Proceed with Repair';
+          ? '[PSHS ZRC] IT JRF #' + jrfNo + ' — Supervisor Approved · Please Submit Assessment'
+          : '[PSHS ZRC] IT JRF #' + jrfNo + ' — Director Approved · Proceed with Repair';
         const body = type === 'supervisor'
           ? 'Ticket ' + jrfNo + ' has been approved by the supervisor.\n\nRequester: ' + ticketRow[2] + '\nProblem: ' + ticketRow[5] + '\n\nPlease open the IT Dashboard to assign staff and submit your assessment.'
           : 'Ticket ' + jrfNo + ' has been approved by the Campus Director.\n\nRequester: ' + ticketRow[2] + '\nProblem: ' + ticketRow[5] + '\n\nPlease open the IT Dashboard to begin work and mark the ticket as Completed when done.';
@@ -1983,7 +2006,7 @@ function handleApproval(token, action) {
           const safeJrfNoR  = htmlEncode(jrfNo);
           const safeNameR   = htmlEncode(ticketRow[2] || '');
           const safeProbR   = htmlEncode((ticketRow[5] || '').substring(0, 150));
-          const rejSubject  = '[PSHS ZRC] IT Job Request IT JRF #' + jrfNo + ' \u2014 Not Approved';
+          const rejSubject  = '[PSHS ZRC] IT JRF #' + jrfNo + ' — Request Not Approved';
           const rejHtml =
             '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">' +
             '<div style="background:#1a3c6e;padding:20px 28px;border-radius:6px 6px 0 0;">' +
@@ -2085,7 +2108,7 @@ function sendApprovalEmail(type, jrfNo, ticket) {
   const encodedToken = encodeURIComponent(token);
   const approveUrl  = webAppUrl + '?token=' + encodedToken + '&action=approve';
   const rejectUrl   = webAppUrl + '?token=' + encodedToken + '&action=reject';
-  const subject     = '[PSHS ZRC] IT Job Request #' + jrfNo + ' — Awaiting your approval';
+  const subject     = '[PSHS ZRC] IT JRF #' + jrfNo + ' — Awaiting your approval';
 
   // HTML-encode all ticket field values before interpolating into the email body.
   const safeJrfNo         = htmlEncode(jrfNo);
@@ -2732,29 +2755,49 @@ function generateFormPdf(authToken, jrfNo) {
   }
 
   // Helper: break a multi-row merged block into individual per-row merges,
-  // then write one pre-wrapped line per row with NO auto-expand wrap.
-  function writeTextBlock(colStart, colEnd, rowStart, numRows, value) {
-    // 1. Break the existing vertical merge
-    temp.getRange(colStart + rowStart + ':' + colEnd + (rowStart + numRows - 1)).breakApart();
+  // write one pre-wrapped line per row, set CLIP wrap, and lock each row height.
+  // Uses numeric column indices (A=1 … E=5 … Q=17) — more reliable than A1-notation
+  // string concatenation when the sheet has been copied from a Template with
+  // existing merged ranges.
+  //
+  // Argument map:
+  //   startRow / endRow   — sheet row numbers (1-based)
+  //   startCol / endCol   — sheet column numbers (A=1, B=2, … E=5, Q=17)
+  //   value               — text to write (pre-wrapped at 120 chars per line)
+  function writeTextBlock(startRow, endRow, startCol, endCol, value) {
+    const numRows = endRow - startRow + 1;
+    const numCols = endCol - startCol + 1;
 
-    // 2. Pre-wrap: split on newlines first, then word-wrap each segment at ~80 chars
+    // 1. Break any existing merge over the ENTIRE block first.
+    //    Template pre-merges the block as one big cell.  Writing to it without
+    //    breaking it first lets the merged cell expand vertically regardless of
+    //    WrapStrategy.CLIP — causing the "overflow" into the rows below.
+    temp.getRange(startRow, startCol, numRows, numCols).breakApart();
+
+    // 2. Pre-wrap: split on explicit newlines, then word-wrap each segment.
     const allLines = [];
     for (const seg of String(value || '').split('\n')) {
       allLines.push(...wordWrapLines(seg, 120));
     }
 
+    // 3. Write each line to its own single-row merged range.
     for (let i = 0; i < numRows; i++) {
-      const row      = rowStart + i;
-      const rowRange = temp.getRange(colStart + row + ':' + colEnd + row);
-      // 3. Merge this single row horizontally
-      rowRange.mergeAcross();
-      // 4. Write one pre-wrapped line (no cell-level wrapping needed)
+      const row      = startRow + i;
+      const rowRange = temp.getRange(row, startCol, 1, numCols);
+
+      // Merge this single row across all columns — one independent cell per row.
+      rowRange.merge();
+
+      // Write text (empty string for rows beyond the available lines).
       rowRange.setValue(i < allLines.length ? allLines[i] : '');
-      rowRange.setWrap(false);
+
+      // Apply CLIP AFTER merge() and setValue() — setting before merge() is lost.
       rowRange.setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
       rowRange.setHorizontalAlignment('left');
       rowRange.setVerticalAlignment('middle');
-      // 5. Lock the row height — CLIP prevents Sheets from auto-expanding
+
+      // Lock row height LAST — must follow setValue/setWrapStrategy so Sheets
+      // cannot override it with auto-height after writing the cell value.
       temp.setRowHeight(row, 21);
     }
   }
@@ -2765,9 +2808,9 @@ function generateFormPdf(authToken, jrfNo) {
   writeCell('E7',  ticket.position);                        // Position:   E7:L7
   writeCell('E8',  ticket.supervisor,     true);            // Supervisor: E8:L8       bold
   writeCell('O8',  ticket.date);                            // Date:       O8:Q9
-  writeTextBlock('E', 'Q', 10, 5, ticket.problem);          // Problem:    E10:Q14 (5 rows)
-  writeTextBlock('E', 'Q', 15, 5, ticket.assessment);       // Assessment: E15:Q19 (5 rows)
-  writeTextBlock('E', 'Q', 30, 4, ticket.actionTaken);      // Action Taken: E30:Q33 (4 rows)
+  writeTextBlock(10, 14, 5, 17, ticket.problem);     // Problem:      E10:Q14 (5 rows, E=5 Q=17)
+  writeTextBlock(15, 19, 5, 17, ticket.assessment);  // Assessment:   E15:Q19 (5 rows)
+  writeTextBlock(30, 33, 5, 17, ticket.actionTaken); // Action Taken: E30:Q33 (4 rows)
   writeCell('B28', ticket.assignedStaff,  true);            // Assigned Staff: B28:F28 bold
   writeCell('H28', ticket.targetDate);                      // Target Date:    H28:L28
   writeCell('N28', 'Edman H. Gallamaso',  true);            // Campus Director: N28:Q28 bold
@@ -2818,7 +2861,11 @@ function generateFormPdf(authToken, jrfNo) {
   SpreadsheetApp.flush();
 
   // --- System-generated footer (row 41) ---
-  const footerRange = temp.getRange('B41:Q41');
+  // Row 40 is intentionally left empty as a visual spacer between the last
+  // form content row (39, Confirmed by User) and this footer.
+  // getRange(row, col, numRows, numCols) is used instead of A1 notation —
+  // numeric references are more reliable on copied Template sheets.
+  const footerRange = temp.getRange(41, 2, 1, 16); // B41:Q41
   footerRange.merge();
   footerRange.setValue(
     'This is a system-generated document processed through the PSHS-ZRC IT Help Desk. ' +
@@ -2830,7 +2877,7 @@ function generateFormPdf(authToken, jrfNo) {
   footerRange.setFontStyle('italic');
   footerRange.setHorizontalAlignment('center');
   footerRange.setVerticalAlignment('middle');
-  footerRange.setWrap(true);
+  footerRange.setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
   temp.setRowHeight(41, 30);
 
   // Export as A4 PDF
@@ -2985,7 +3032,7 @@ function sendOverdueReminders() {
     try {
       MailApp.sendEmail(
         staffEmails.join(','),
-        'Overdue IT Ticket — ' + jrfNo,
+        '[PSHS ZRC] Overdue Tickets — Action Required',
         'The following IT Job Request is overdue:\n\n' +
         'IT JRF #:     ' + jrfNo      + '\n' +
         'Requester:    ' + name        + '\n' +
