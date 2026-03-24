@@ -8,7 +8,7 @@
   <!-- Login flicker fix + theme restore (DESIGN.md §7-C) — both run before first paint -->
   <script>
     (function() {
-      if (sessionStorage.getItem('dashAuthorized') === '1') {
+      if (localStorage.getItem('dashAuthorized') === '1') {
         document.documentElement.classList.add('is-authorized');
       }
       if (localStorage.getItem('pshs_theme') === 'light') {
@@ -404,6 +404,24 @@
     }
     .btn-export:hover { border-color: var(--gold); color: var(--gold); }
 
+    /* ── Bulk PDF download (FIX 6) ───────────────────────────────────────────── */
+    .report-export-btn {
+      background: transparent; border: 1px solid var(--border-mid);
+      border-radius: var(--radius-sm); padding: 6px 14px;
+      font-size: 11px; color: var(--text-muted);
+      font-family: 'Inter', sans-serif; cursor: pointer;
+      transition: border-color 0.15s, color 0.15s; white-space: nowrap;
+    }
+    .report-export-btn:hover:not(:disabled) { border-color: var(--gold); color: var(--gold); }
+    .report-export-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .report-select {
+      background: var(--bg-input); border: 1px solid var(--border-mid);
+      border-radius: var(--radius-sm); padding: 6px 10px;
+      font-size: 11px; color: var(--text-sec); font-family: 'Inter', sans-serif; outline: none;
+    }
+    .report-select:focus { border-color: var(--navy-light); }
+    .report-select option { background: var(--bg-card); color: var(--text-pri); }
+
     /* ── Overdue ─────────────────────────────────────────────────────────────── */
 
     .overdue-count { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
@@ -421,6 +439,40 @@
     .bar-track { flex: 1; background: var(--bg-input); border-radius: 4px; height: 20px; overflow: hidden; }
     .bar-fill  { background: var(--navy-light); height: 100%; border-radius: 4px; min-width: 4px; transition: width 0.4s ease; }
     .bar-count { font-size: 12px; font-weight: 600; color: var(--text-sec); min-width: 28px; text-align: left; flex-shrink: 0; }
+
+    /* ── Pagination bar (FIX 5) ─────────────────────────────────────────────── */
+    .pagination-bar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 12px 0 4px;
+    }
+    .page-btn {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-mid);
+      border-radius: var(--radius-sm);
+      padding: 6px 16px;
+      font-size: 12px;
+      color: var(--text-sec);
+      font-family: 'Inter', sans-serif;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .page-btn:hover:not(:disabled) { border-color: var(--navy-light); color: var(--text-pri); }
+    .page-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .page-info { font-size: 11px; color: var(--text-muted); }
+
+    /* ── Modal error message (FIX 1) ────────────────────────────────────────── */
+    .modal-error {
+      background: rgba(226,75,74,0.1);
+      border: 1px solid rgba(226,75,74,0.3);
+      border-radius: var(--radius-sm);
+      padding: 10px 13px;
+      font-size: 12px;
+      color: #f07070;
+      margin-top: 10px;
+    }
 
     /* ── Auth flicker fix ────────────────────────────────────────────────────── */
     .is-authorized #access-denied-overlay { display: none !important; }
@@ -542,6 +594,11 @@
       </table>
       <div class="empty" id="empty" style="display:none;">No tickets found.</div>
     </div>
+    <div class="pagination-bar" id="pagination-bar">
+      <button class="page-btn" id="page-prev" onclick="changePage(-1)">&#8592; Prev</button>
+      <span class="page-info" id="page-info"></span>
+      <button class="page-btn" id="page-next" onclick="changePage(1)">Next &#8594;</button>
+    </div>
   </div>
 
   <!-- Reports panel (hidden by default, shown when Reports button is clicked) -->
@@ -618,6 +675,37 @@
       <div class="bar-chart" id="bar-chart"></div>
     </div>
 
+    <!-- Report 4: Bulk PDF Download (FIX 6) -->
+    <div class="report-section">
+      <div class="report-section-title">&#8595; Bulk PDF Download</div>
+      <div class="report-controls" style="gap:16px;flex-wrap:wrap;">
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div style="font-size:11px;font-weight:600;color:var(--text-sec);">Last completed week</div>
+          <button class="report-export-btn" id="bulk-weekly-btn" onclick="downloadBulkPdf('weekly')">
+            &#8595; Download Weekly PDFs
+          </button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div style="font-size:11px;font-weight:600;color:var(--text-sec);">Completed by month</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <select id="bulk-year" class="report-select"></select>
+            <select id="bulk-month" class="report-select">
+              <option value="1">January</option><option value="2">February</option>
+              <option value="3">March</option><option value="4">April</option>
+              <option value="5">May</option><option value="6">June</option>
+              <option value="7">July</option><option value="8">August</option>
+              <option value="9">September</option><option value="10">October</option>
+              <option value="11">November</option><option value="12">December</option>
+            </select>
+            <button class="report-export-btn" id="bulk-monthly-btn" onclick="downloadBulkPdf('monthly')">
+              &#8595; Download Monthly PDFs
+            </button>
+          </div>
+        </div>
+      </div>
+      <div id="bulk-pdf-status" style="margin-top:10px;font-size:12px;color:var(--text-muted);"></div>
+    </div>
+
   </div>
 
 </div><!-- /.dash-body -->
@@ -653,10 +741,16 @@
         <label for="edit-problem">Problem Description</label>
         <textarea id="edit-problem" placeholder="Describe the issue..."></textarea>
       </div>
+      <div class="form-group">
+        <label>Original Description (read only)</label>
+        <textarea id="edit-raw-desc" readonly
+          style="opacity:0.6;cursor:default;resize:none;height:80px;"></textarea>
+      </div>
+      <div class="modal-error" id="edit-error" style="display:none;"></div>
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeEditModal()">Cancel</button>
-      <button class="btn-primary" onclick="submitEdit()">&#10003; Save Changes</button>
+      <button class="btn-primary" id="edit-submit-btn" onclick="submitEdit()">&#10003; Save Changes</button>
     </div>
   </div>
 </div>
@@ -722,10 +816,11 @@
         <textarea id="assess-text" placeholder="Describe the technical assessment of the issue..."></textarea>
         <div class="field-error" id="err-assess-text">Assessment is required.</div>
       </div>
+      <div class="modal-error" id="assess-error" style="display:none;"></div>
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeAssessModal()">Cancel</button>
-      <button class="btn-primary" onclick="submitAssess()">&#10148; Send for Director Approval</button>
+      <button class="btn-primary" id="assess-submit-btn" onclick="submitAssess()">&#10148; Send for Director Approval</button>
     </div>
   </div>
 </div>
@@ -756,10 +851,11 @@
         <textarea id="complete-action" placeholder="Describe the steps taken to resolve the issue..."></textarea>
         <div class="field-error" id="err-action">Action Taken is required.</div>
       </div>
+      <div class="modal-error" id="complete-error" style="display:none;"></div>
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeCompleteModal()">Cancel</button>
-      <button class="btn-success" onclick="submitComplete()">&#10003; Mark as Completed</button>
+      <button class="btn-success" id="complete-submit-btn" onclick="submitComplete()">&#10003; Mark as Completed</button>
     </div>
   </div>
 </div>
@@ -771,6 +867,10 @@
   let activeFilter  = 'all';
   let assessJrfNo   = null;
   let completeJrfNo = null;
+
+  // ── Pagination (FIX 5) ───────────────────────────────────────────────────────
+  const ROWS_PER_PAGE = 15;
+  let currentPage     = 1;
 
   const MONTH_NAMES = [
     'January','February','March','April','May','June',
@@ -822,7 +922,7 @@
     document.getElementById('access-message').textContent = message;
     document.getElementById('access-email').textContent = email ? 'Signed in as: ' + email : '';
     overlay.style.display = 'flex';
-    sessionStorage.removeItem('dashAuthorized');
+    localStorage.removeItem('dashAuthorized');
   }
 
   function hideAccessDenied() {
@@ -830,7 +930,7 @@
   }
 
   function logout() {
-    sessionStorage.removeItem('dashAuthorized');
+    localStorage.removeItem('dashAuthorized');
     document.getElementById('logged-in-email').textContent = '';
     // Show access-denied overlay with a "sign out" message
     const overlay = document.getElementById('access-denied-overlay');
@@ -843,7 +943,7 @@
   // Called by withFailureHandler when a server function throws
   function onServerError(err) {
     if (err && err.message && (err.message.includes('Unauthorized') || err.message.includes('Session expired'))) {
-      sessionStorage.removeItem('dashAuthorized');
+      localStorage.removeItem('dashAuthorized');
       showAccessDenied('Your session has expired or you are not authorized. Please reload the page.', '');
     } else {
       showToast('Error: ' + (err ? err.message : 'Unknown error'));
@@ -863,7 +963,8 @@
 
     google.script.run
       .withSuccessHandler(function(tickets) {
-        allTickets = tickets;
+        allTickets  = tickets;
+        currentPage = 1; // Reset pagination on fresh data load (FIX 5)
         updateStats(tickets);
 
         const nowReports = document.getElementById('reports-panel').style.display !== 'none';
@@ -885,7 +986,7 @@
   // getTickets() sheet read if nothing has changed since the last render.
   var lastSeenModified = '';
   setInterval(function() {
-    if (sessionStorage.getItem('dashAuthorized') !== '1') return;
+    if (localStorage.getItem('dashAuthorized') !== '1') return;
     google.script.run
       .withSuccessHandler(function(ts) {
         if (ts && ts !== lastSeenModified) {
@@ -910,6 +1011,11 @@
   let sortColumn = 'jrfNo';
   let sortDir    = 'desc'; // 'asc' or 'desc'
   let searchQuery = '';
+
+  // getFilteredRows is the canonical shared helper used by renderTable and pagination (FIX 5)
+  function getFilteredRows() {
+    return getFiltered();
+  }
 
   function getFiltered() {
     let tickets = activeFilter === 'all' ? allTickets : allTickets.filter(t => t.status === activeFilter);
@@ -938,6 +1044,7 @@
 
   function applySearch() {
     searchQuery = document.getElementById('search-input').value.trim();
+    currentPage = 1; // Reset pagination on search (FIX 5)
     renderTable(getFiltered());
   }
 
@@ -953,11 +1060,13 @@
       h.classList.remove('sort-asc', 'sort-desc');
     });
     th.classList.add('sort-' + sortDir);
+    currentPage = 1; // Reset pagination on sort change (FIX 5)
     renderTable(getFiltered());
   }
 
   function setFilter(filter, btn) {
     activeFilter = filter;
+    currentPage  = 1; // Reset pagination on filter change (FIX 5)
     document.querySelectorAll('.chip').forEach(b => b.classList.remove('active-chip'));
     btn.classList.add('active-chip');
     // Show ticket table, hide reports panel
@@ -976,12 +1085,18 @@
     if (tickets.length === 0) {
       table.style.display = 'none';
       empty.style.display = 'block';
+      updatePaginationBar();
       return;
     }
 
-    tickets.forEach(function(t) {
+    // Paginate: slice to current page (FIX 5)
+    const pageRows = tickets.slice((currentPage - 1) * ROWS_PER_PAGE, currentPage * ROWS_PER_PAGE);
+
+    pageRows.forEach(function(t) {
       const row = document.createElement('tr');
       row.id = 'row-' + t.jrfNo;
+      row.dataset.rawDesc       = t.rawDescription   || '';
+      row.dataset.requesterEmail = t.requesterEmail  || '';
 
       // Action buttons differ by status
       let actionHtml = '';
@@ -1021,6 +1136,32 @@
 
     table.style.display = 'table';
     empty.style.display = 'none';
+    updatePaginationBar();
+  }
+
+  // ── Pagination helpers (FIX 5) ───────────────────────────────────────────────
+
+  function changePage(dir) {
+    const totalPages = Math.ceil(getFilteredRows().length / ROWS_PER_PAGE);
+    currentPage = Math.max(1, Math.min(currentPage + dir, totalPages));
+    renderTable(getFilteredRows());
+  }
+
+  function updatePaginationBar() {
+    const filtered   = getFilteredRows();
+    const totalPages = Math.ceil(filtered.length / ROWS_PER_PAGE) || 1;
+    const start      = filtered.length === 0 ? 0 : (currentPage - 1) * ROWS_PER_PAGE + 1;
+    const end        = Math.min(currentPage * ROWS_PER_PAGE, filtered.length);
+    const pageInfo   = document.getElementById('page-info');
+    const prevBtn    = document.getElementById('page-prev');
+    const nextBtn    = document.getElementById('page-next');
+    if (pageInfo) {
+      pageInfo.textContent = filtered.length === 0
+        ? '0 tickets'
+        : start + '\u2013' + end + ' of ' + filtered.length + ' tickets  (Page ' + currentPage + ' of ' + totalPages + ')';
+    }
+    if (prevBtn) prevBtn.disabled = currentPage === 1;
+    if (nextBtn) nextBtn.disabled = currentPage >= totalPages;
   }
 
   // ── Assess Modal ────────────────────────────────────────────────────────────
@@ -1042,6 +1183,8 @@
     document.getElementById('err-assess-recommendation').style.display   = 'none';
     document.getElementById('err-assess-text').style.display             = 'none';
     document.getElementById('err-assess-others').style.display           = 'none';
+    document.getElementById('assess-error').style.display                = 'none';
+    document.getElementById('assess-error').textContent                  = '';
     toggleOthersField(document.getElementById('assess-recommendation').value);
 
     document.getElementById('assess-overlay').classList.add('open');
@@ -1072,6 +1215,11 @@
     const targetDate      = document.getElementById('assess-target-date').value;
     const othersDesc      = document.getElementById('assess-others').value.trim();
 
+    // Clear previous modal-level error
+    const errorEl = document.getElementById('assess-error');
+    errorEl.style.display = 'none';
+    errorEl.textContent   = '';
+
     let valid = true;
     if (!serviceLocation) {
       document.getElementById('err-assess-service-location').style.display = 'block';
@@ -1099,15 +1247,19 @@
     }
     if (!valid) return;
 
-    const jrfNo = assessJrfNo;
-    assessSubmitting = true;
-    closeAssessModal();
-    showToast('Submitting assessment for ' + jrfNo + '…');
+    const jrfNo  = assessJrfNo;
+    const btn    = document.getElementById('assess-submit-btn');
+    assessSubmitting   = true;
+    btn.disabled       = true;
+    btn.textContent    = 'Sending…';
 
     google.script.run
       .withSuccessHandler(function(result) {
         assessSubmitting = false;
+        btn.disabled     = false;
+        btn.innerHTML    = '&#10148; Send for Director Approval';
         if (result && result.ok) {
+          closeAssessModal();
           const t = allTickets.find(x => x.jrfNo === jrfNo);
           if (t) {
             t.status            = 'Pending Director Approval';
@@ -1120,12 +1272,22 @@
           }
           updateStats(allTickets);
           renderTable(getFiltered());
+          updatePaginationBar();
           showToast('Assessment submitted. Director approval email sent for ' + jrfNo + '.');
         } else {
-          showToast('Error: ' + (result && result.error ? result.error : 'Could not submit assessment.'));
+          // Keep modal open and show error inside it
+          errorEl.textContent   = 'Error: ' + (result && result.error ? result.error : 'Could not submit assessment.');
+          errorEl.style.display = 'block';
         }
       })
-      .withFailureHandler(function(err) { assessSubmitting = false; onServerError(err); })
+      .withFailureHandler(function(err) {
+        assessSubmitting = false;
+        btn.disabled     = false;
+        btn.innerHTML    = '&#10148; Send for Director Approval';
+        // Keep modal open and show error inside it
+        errorEl.textContent   = 'Error: ' + (err ? err.message : 'Unknown error');
+        errorEl.style.display = 'block';
+      })
       .submitAssessment(dashToken, jrfNo, assignedStaff, recommendation, assessment, targetDate, othersDesc, serviceLocation);
   }
 
@@ -1142,8 +1304,10 @@
     document.querySelectorAll('input[name="complete-task-result"]').forEach(function(r) {
       r.checked = t && r.value === t.taskResult;
     });
-    document.getElementById('err-task-result').style.display = 'none';
-    document.getElementById('err-action').style.display      = 'none';
+    document.getElementById('err-task-result').style.display    = 'none';
+    document.getElementById('err-action').style.display         = 'none';
+    document.getElementById('complete-error').style.display     = 'none';
+    document.getElementById('complete-error').textContent       = '';
 
     document.getElementById('complete-overlay').classList.add('open');
     document.getElementById('complete-action').focus();
@@ -1158,6 +1322,11 @@
     const actionTaken  = document.getElementById('complete-action').value.trim();
     const taskResultEl = document.querySelector('input[name="complete-task-result"]:checked');
     const taskResult   = taskResultEl ? taskResultEl.value : '';
+
+    // Clear previous modal-level error
+    const errorEl = document.getElementById('complete-error');
+    errorEl.style.display = 'none';
+    errorEl.textContent   = '';
 
     let valid = true;
     if (!taskResult) {
@@ -1175,12 +1344,16 @@
     if (!valid) return;
 
     const jrfNo = completeJrfNo;
-    closeCompleteModal();
-    showToast('Marking ' + jrfNo + ' as Completed…');
+    const btn   = document.getElementById('complete-submit-btn');
+    btn.disabled     = true;
+    btn.textContent  = 'Saving…';
 
     google.script.run
       .withSuccessHandler(function(result) {
+        btn.disabled    = false;
+        btn.innerHTML   = '&#10003; Mark as Completed';
         if (result && result.ok) {
+          closeCompleteModal();
           const t = allTickets.find(x => x.jrfNo === jrfNo);
           if (t) {
             t.status      = 'Completed';
@@ -1189,12 +1362,26 @@
           }
           updateStats(allTickets);
           renderTable(getFiltered());
+          updatePaginationBar();
           showToast('Ticket ' + jrfNo + ' marked as Completed.');
         } else {
-          showToast('Error: ' + (result && result.error ? result.error : 'Could not update ticket.'));
+          // Keep modal open and show error inside it
+          errorEl.textContent   = 'Error: ' + (result && result.error ? result.error : 'Could not update ticket.');
+          errorEl.style.display = 'block';
         }
       })
-      .withFailureHandler(onServerError)
+      .withFailureHandler(function(err) {
+        btn.disabled   = false;
+        btn.innerHTML  = '&#10003; Mark as Completed';
+        // Keep modal open and show error inside it
+        if (err && err.message && (err.message.includes('Unauthorized') || err.message.includes('Session expired'))) {
+          closeCompleteModal();
+          onServerError(err);
+        } else {
+          errorEl.textContent   = 'Error: ' + (err ? err.message : 'Unknown error');
+          errorEl.style.display = 'block';
+        }
+      })
       .updateTicketStatus(dashToken, jrfNo, actionTaken, taskResult);
   }
 
@@ -1218,6 +1405,56 @@
       })
       .withFailureHandler(onServerError)
       .generateFormPdf(dashToken, jrfNo);
+  }
+
+  // ── Bulk PDF download (FIX 6) ────────────────────────────────────────────────
+
+  function downloadBulkPdf(period) {
+    const statusEl = document.getElementById('bulk-pdf-status');
+    const btn      = document.getElementById('bulk-' + period + '-btn');
+    const year     = parseInt(document.getElementById('bulk-year')  ? document.getElementById('bulk-year').value  : new Date().getFullYear());
+    const month    = parseInt(document.getElementById('bulk-month') ? document.getElementById('bulk-month').value : (new Date().getMonth() + 1));
+
+    btn.disabled    = true;
+    btn.textContent = '\u29d7 Generating\u2026';
+    statusEl.textContent = 'Please wait \u2014 this may take a minute for large batches\u2026';
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        btn.disabled    = false;
+        btn.textContent = period === 'weekly' ? '\u2193 Download Weekly PDFs' : '\u2193 Download Monthly PDFs';
+        if (!result.pdfs || result.pdfs.length === 0) {
+          statusEl.textContent = result.label || 'No completed tickets found for this period.';
+          return;
+        }
+        let downloaded = 0;
+        result.pdfs.forEach(function(item) {
+          if (!item.base64) return;
+          const bytes = atob(item.base64);
+          const arr   = new Uint8Array(bytes.length);
+          for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+          const blob  = new Blob([arr], { type: 'application/pdf' });
+          const url   = URL.createObjectURL(blob);
+          const link  = document.createElement('a');
+          link.href     = url;
+          link.download = 'IT-JRF-' + item.jrfNo + '.pdf';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+          downloaded++;
+        });
+        statusEl.textContent = '\u2713 Downloaded ' + downloaded + ' PDF(s) \u2014 ' + result.label;
+        if (result.count > downloaded) {
+          statusEl.textContent += ' (' + (result.count - downloaded) + ' failed \u2014 check console)';
+        }
+      })
+      .withFailureHandler(function(err) {
+        btn.disabled    = false;
+        btn.textContent = period === 'weekly' ? '\u2193 Download Weekly PDFs' : '\u2193 Download Monthly PDFs';
+        statusEl.textContent = '\u2717 Error: ' + (err ? err.message : 'Unknown error');
+      })
+      .getBulkPdfData(period, year, month);
   }
 
   // ── Utilities ───────────────────────────────────────────────────────────────
@@ -1253,7 +1490,22 @@
     document.getElementById('edit-position').value   = (t && t.position)   || '';
     document.getElementById('edit-supervisor').value = (t && t.supervisor) || '';
     document.getElementById('edit-problem').value    = (t && t.problem)    || '';
-    document.getElementById('err-edit-name').style.display = 'none';
+
+    // Populate read-only raw description from the table row's data attribute (FIX 4)
+    const rowEl   = document.getElementById('row-' + jrfNo);
+    const rawDesc = rowEl ? (rowEl.dataset.rawDesc || '') : '';
+    const rawEl   = document.getElementById('edit-raw-desc');
+    if (rawDesc) {
+      rawEl.value       = rawDesc;
+      rawEl.placeholder = '';
+    } else {
+      rawEl.value       = '';
+      rawEl.placeholder = 'Not available';
+    }
+
+    document.getElementById('err-edit-name').style.display  = 'none';
+    document.getElementById('edit-error').style.display     = 'none';
+    document.getElementById('edit-error').textContent       = '';
 
     document.getElementById('edit-overlay').classList.add('open');
     document.getElementById('edit-name').focus();
@@ -1270,6 +1522,11 @@
     const supervisor = document.getElementById('edit-supervisor').value.trim();
     const problem    = document.getElementById('edit-problem').value.trim();
 
+    // Clear previous modal-level error
+    const errorEl = document.getElementById('edit-error');
+    errorEl.style.display = 'none';
+    errorEl.textContent   = '';
+
     if (!name) {
       document.getElementById('err-edit-name').style.display = 'block';
       return;
@@ -1277,12 +1534,16 @@
     document.getElementById('err-edit-name').style.display = 'none';
 
     const jrfNo = editJrfNo;
-    closeEditModal();
-    showToast('Saving changes for ' + jrfNo + '…');
+    const btn   = document.getElementById('edit-submit-btn');
+    btn.disabled     = true;
+    btn.textContent  = 'Submitting…';
 
     google.script.run
       .withSuccessHandler(function(result) {
+        btn.disabled  = false;
+        btn.innerHTML = '&#10003; Save Changes';
         if (result && result.ok) {
+          closeEditModal();
           const t = allTickets.find(x => x.jrfNo === jrfNo);
           if (t) {
             t.name       = name;
@@ -1291,12 +1552,26 @@
             t.problem    = problem;
           }
           renderTable(getFiltered());
+          updatePaginationBar();
           showToast('Ticket ' + jrfNo + ' details updated.');
         } else {
-          showToast('Error: ' + (result && result.error ? result.error : 'Could not update ticket.'));
+          // Keep modal open and show error inside it
+          errorEl.textContent   = 'Error: ' + (result && result.error ? result.error : 'Could not update ticket.');
+          errorEl.style.display = 'block';
         }
       })
-      .withFailureHandler(onServerError)
+      .withFailureHandler(function(err) {
+        btn.disabled  = false;
+        btn.innerHTML = '&#10003; Save Changes';
+        // Keep modal open and show error inside it
+        if (err && err.message && (err.message.includes('Unauthorized') || err.message.includes('Session expired'))) {
+          closeEditModal();
+          onServerError(err);
+        } else {
+          errorEl.textContent   = 'Error: ' + (err ? err.message : 'Unknown error');
+          errorEl.style.display = 'block';
+        }
+      })
       .updateTicketDetails(dashToken, jrfNo, name, position, supervisor, problem);
   }
 
@@ -1319,12 +1594,38 @@
     // Hide ticket table, show reports panel
     document.getElementById('table-section').style.display  = 'none';
     document.getElementById('reports-panel').style.display  = 'flex';
+
+    // FIX 2: Guard against rendering before ticket data has loaded
+    if (!allTickets || !allTickets.length) {
+      document.getElementById('reports-panel').innerHTML =
+        '<div style="padding:40px;text-align:center;color:var(--text-muted);">' +
+        'Loading ticket data — please wait a moment and try again.</div>';
+      document.getElementById('reports-panel').style.display = 'block';
+      document.getElementById('table-section').style.display = 'none';
+      return;
+    }
+
     // Default month/year dropdowns to current month and year on first open
     const monthSel = document.getElementById('rpt-month');
-    if (!monthSel._initialized) {
+    if (monthSel && !monthSel._initialized) {
       monthSel.value        = String(new Date().getMonth() + 1);
       monthSel._initialized = true;
     }
+
+    // Populate bulk-year dropdown and set bulk-month to current month on first open (FIX 6)
+    const yearSelect = document.getElementById('bulk-year');
+    if (yearSelect && yearSelect.options.length === 0) {
+      const currentYear = new Date().getFullYear();
+      for (let y = currentYear; y >= currentYear - 3; y--) {
+        const opt = document.createElement('option');
+        opt.value       = y;
+        opt.textContent = y;
+        yearSelect.appendChild(opt);
+      }
+      const bulkMonthSel = document.getElementById('bulk-month');
+      if (bulkMonthSel) bulkMonthSel.value = String(new Date().getMonth() + 1);
+    }
+
     renderReports();
   }
 
@@ -1613,7 +1914,7 @@
       .withSuccessHandler(function(result) {
         if (result && result.authorized) {
           // Authorized — show dashboard
-          sessionStorage.setItem('dashAuthorized', '1');
+          localStorage.setItem('dashAuthorized', '1');
           document.documentElement.classList.add('is-authorized');
           hideAccessDenied();
           document.getElementById('logged-in-email').textContent = result.email;
@@ -1626,7 +1927,7 @@
           loadTickets();
         } else {
           // Not authorized
-          sessionStorage.removeItem('dashAuthorized');
+          localStorage.removeItem('dashAuthorized');
           const email = result && result.email ? result.email : '';
           showAccessDenied(
             email
@@ -1637,7 +1938,7 @@
         }
       })
       .withFailureHandler(function(err) {
-        sessionStorage.removeItem('dashAuthorized');
+        localStorage.removeItem('dashAuthorized');
         showAccessDenied(
           'Unable to verify your Google account. Make sure you are signed in and try reloading.',
           ''

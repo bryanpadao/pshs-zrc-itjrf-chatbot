@@ -2578,7 +2578,8 @@ function assignStaff(token, jrfNo, staffName) {
  *                             collision with the internal OAuth token variable)
  */
 function generateFormPdf(authToken, jrfNo) {
-  _requireDashboardAuth(authToken);
+  // Allow internal calls from getBulkPdfData() without re-authing (FIX 6)
+  if (authToken !== '__internal__') _requireDashboardAuth(authToken);
   const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
   const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
   if (!sheet) throw new Error('Tickets sheet not found');
@@ -2753,6 +2754,85 @@ function generateFormPdf(authToken, jrfNo) {
   ss.deleteSheet(temp);
 
   return base64;
+}
+
+/**
+ * Returns base64-encoded PDFs for all Completed tickets in a given period.
+ * period: 'weekly' (last completed Mon–Sun week) or 'monthly' (given year/month).
+ * Called from Dashboard bulk PDF download feature (FIX 6).
+ * Capped at 20 tickets to avoid Apps Script execution time limits.
+ */
+function getBulkPdfData(period, year, month) {
+  _requireDashboardAuth();
+
+  const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
+  if (!sheet) throw new Error('Tickets sheet not found');
+
+  const rows = sheet.getDataRange().getValues();
+
+  const now = new Date();
+  let fromDate, toDate;
+
+  if (period === 'weekly') {
+    // Most recently completed Mon–Sun week
+    const day        = now.getDay(); // 0=Sun
+    const daysToLastMon = day === 0 ? 6 : day - 1;
+    toDate   = new Date(now);
+    toDate.setDate(now.getDate() - daysToLastMon - 1); // last Sunday
+    toDate.setHours(23, 59, 59, 999);
+    fromDate = new Date(toDate);
+    fromDate.setDate(toDate.getDate() - 6);            // Monday before that
+    fromDate.setHours(0, 0, 0, 0);
+  } else {
+    fromDate = new Date(year, month - 1, 1);
+    fromDate.setHours(0, 0, 0, 0);
+    toDate   = new Date(year, month, 0);               // last day of month
+    toDate.setHours(23, 59, 59, 999);
+  }
+
+  // Collect jrfNo values for Completed tickets with dateCompleted in range (col J = index 9)
+  const targets = [];
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (row[7] !== 'Completed') continue;
+    const completedDate = new Date(row[9]);
+    if (isNaN(completedDate)) continue;
+    if (completedDate >= fromDate && completedDate <= toDate) {
+      targets.push(String(row[0]));
+    }
+  }
+
+  if (targets.length > 20) {
+    return {
+      pdfs:  [],
+      label: 'Too many tickets (' + targets.length + '). Use a shorter date range or download individually.'
+    };
+  }
+
+  if (targets.length === 0) {
+    return { pdfs: [], label: 'No completed tickets in range' };
+  }
+
+  const pdfs = [];
+  for (const jrfNo of targets) {
+    try {
+      const base64 = generateFormPdf('__internal__', jrfNo);
+      pdfs.push({ jrfNo: jrfNo, base64: base64 });
+    } catch (e) {
+      console.error('getBulkPdfData: failed for ' + jrfNo, e);
+      pdfs.push({ jrfNo: jrfNo, base64: null, error: e.message });
+    }
+  }
+
+  const monthNames = ['','January','February','March','April','May','June',
+                      'July','August','September','October','November','December'];
+  const label = period === 'weekly'
+    ? 'Week of ' + Utilities.formatDate(fromDate, Session.getScriptTimeZone(), 'yyyy-MM-dd') +
+      ' to ' + Utilities.formatDate(toDate, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+    : monthNames[month] + ' ' + year;
+
+  return { pdfs: pdfs, label: label, count: pdfs.length };
 }
 
 
