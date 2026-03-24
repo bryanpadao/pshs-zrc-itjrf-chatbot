@@ -123,7 +123,7 @@ One row per submitted ticket. Row 1 is the header row.
 
 | Col | Header | Notes |
 |-----|--------|-------|
-| A | IT JRF # | 4-digit padded string e.g. `0001` |
+| A | IT JRF # | Year-month-sequence format e.g. `2026-03-001`. Counter resets monthly. Format: yyyy-mm-NNN (3-digit zero-padded sequence). |
 | B | Date | Submission date `yyyy-MM-dd` |
 | C | Name | Requester full name |
 | D | Position | Requester position / role |
@@ -214,6 +214,7 @@ Official ITJRF layout. `generateFormPdf()` copies this tab, fills it, exports PD
 | B39:E39 | Date Completed | ticket.dateCompleted → **B39** | auto from sheet |
 | G39:K39 | Serviced by | ticket.assignedStaff → **G39** | **bold** |
 | M39:Q39 | Confirmed by User | ticket.name → **M39** | **bold** |
+| B41:Q41 | System footer | Static text — system-generated notice with digital approval statement | italic, 7pt, gray, centered, row height 30 |
 
 **Service location checkboxes — row 21 (from `ticket.serviceLocation`, col P):**
 
@@ -407,7 +408,7 @@ Called after name confirmation (yes path) and after manual department entry. Alw
 - **`hasEnoughContext(message)`** — lightweight Gemini call; returns bool — true if message has enough detail to file a ticket; false increments `session.strikeCount` (in chat flow); fails open (returns true) on API error
 - **`buildDescriptionFromHistory(session)`** — Gemini call to extract a comprehensive description from the full chat history; falls back to `session.formData.description` on error
 - **`paraphraseDescription(rawText)`** — Gemini call to formally paraphrase description in Philippine government document style; returns rawText unchanged on error
-- **`handleCctvLetterCheck(message, session)`** — handles `cctv_letter_check` state; yes = proceed to description; no = explain requirement + end conversation
+- **`handleCctvLetterCheck(message, session)`** — handles `cctv_letter_check` state; yes = proceed to description; no = explain requirement + end conversation. Yes/no matching uses `containsWord()` (word-boundary regex); negative phrases (e.g. "not yet", "wala pa") are checked before positive ones to prevent "ok" from matching "not ok".
 - **`searchKnowledgeBase(query)`** — keyword scoring against KnowledgeBase sheet, returns top 3 or null
 - **`callGemini(message, history, kbContext)`** — Gemini API call with system prompt + KB context + history
 - **`submitFormTicket(params)`** — handles form-panel submissions for `publication`/`cctv`/`technical`; `params.userIdentity` is intentionally ignored — identity is re-verified server-side via `getUserIdentity()` to prevent spoofing; validates rate limits + CCTV letter flag; paraphrases description; calls `saveTicket()`; returns `{ jrfNo, rawDesc, name, departmentFull, supervisor }` on success or `{ error, message }` on failure. Does NOT call `hasEnoughContext()` — its IT-repair prompt incorrectly rejects design/CCTV/technical requests; the 8-word minimum is sufficient for forms.
@@ -424,9 +425,10 @@ Called after name confirmation (yes path) and after manual department entry. Alw
 
 ### Approval functions
 - **`sendApprovalEmail(type, jrfNo, ticket)`** — generates UUID token, stores in Approvals sheet (cols A–E, col E = Created ISO timestamp), sends HTML approval email via `GmailApp.sendEmail()` with plain-text fallback. HTML layout: dark navy header (`#1a3c6e`), alternating detail table rows, navy left-border problem block, gold left-border assessment block (director email only), styled Approve/Reject buttons. Subject: `[PSHS ZRC] IT Job Request #${jrfNo} — Awaiting your approval`. Email table label: `IT JRF #`. IT staff notification subjects: `IT JRF {jrfNo}: Supervisor Approved — Please Submit Assessment` / `IT JRF {jrfNo}: Director Approved — Proceed with Repair`. Full department name resolved via `lookupDepartment(ticket.department).fullName` (e.g. `"SSD"` → `"Student Services Division"`). Recipient: `ticket.supervisorEmail` (supervisor) or `DIRECTOR_EMAIL` (director). Token storage logic unchanged.
-- **`handleApproval(token, action)`** — validates token; checks 7-day expiry against col E (Created); updates ticket status; notifies IT staff. Only reached after the approver explicitly clicks Confirm on the intermediate page — never called directly from the first link click.
+- **`handleApproval(token, action)`** — validates token; checks 7-day expiry against col E (Created); updates ticket status; notifies IT staff. Only reached after the approver explicitly clicks Confirm on the intermediate page — never called directly from the first link click. On rejection, also sends an HTML rejection notification email to col R (Requester Email) informing the requester their ticket was not approved at the supervisor or director stage.
 - **`showApprovalConfirmPage(token, action)`** — intermediate confirmation page rendered on the first approval link click; shows ticket summary and Approve/Reject buttons that link to `?token=X&action=Y&confirm=1`; prevents email scanner bots from silently approving/rejecting
 - **`approvalHtmlPage(title, message)`** — returns styled HTML response for approval link clicks
+- **`buildRejectionEmail(jrfNo, ticket, type)`** — HTML email builder for rejection notifications sent to the requester (col R) when a ticket is rejected; reuses the navy-header template from `sendApprovalEmail()`; `type` is `'supervisor'` or `'director'` and is used in the subject/body to indicate which stage rejected the ticket
 - **`getStaffEmail(name)`** — looks up email from optional `Staff` sheet by name
 - **`lookupDepartment(dept)`** — looks up supervisor name + email + full office name from `Departments` sheet; matches on abbreviated code (col A) or full name (col D)
 - **`lookupEmployee(name)`** — kept for backward compatibility; no longer called in main flow (identity now resolved by `getUserIdentity()`)
@@ -746,6 +748,10 @@ ALLOWED_DOMAIN   → (optional) e.g. zrc.pshs.edu.ph — restricts chatbot to th
 | Duplicate IT JRF numbers under concurrent submissions | `saveTicket()` wraps JRF# generation and `appendRow()` in `LockService.getScriptLock()` — only one request at a time can read the last row and write the next row |
 | Race condition in global rate limit | `checkGlobalRateLimit()` wraps the read-modify-write of the timestamp array in `LockService.getScriptLock()` — two simultaneous submissions can no longer both pass a single remaining slot |
 | `getMyTickets`/`getTicketUpdates` email param ignored | The `email` parameter accepted by both functions is intentionally ignored; identity is derived server-side from `Session.getActiveUser()` to prevent a user from querying another user's tickets by passing a different email |
+| `handleApproval()` consumed token before ticket validation | Fixed: ticket row is now looked up and validated before the token is marked Used — a failed ticket lookup no longer permanently invalidates the approval token |
+| Per-user rate limit TTL could be 0 at midnight PHT | Fixed: TTL uses `Math.max(60, ...)` — minimum 60 seconds ensures `CacheService.put()` never receives a zero or negative value |
+| `handleCctvLetterCheck()` partial-word false matches on yes/no | Fixed: yes/no detection uses `containsWord()` (word-boundary regex) and checks negative phrases before positive — prevents `'ok'` from matching `'not ok'` |
+| Requester not notified on rejection | Fixed: `handleApproval()` reads col R (Requester Email) and sends an HTML rejection notification email when status → `Rejected` |
 
 ---
 

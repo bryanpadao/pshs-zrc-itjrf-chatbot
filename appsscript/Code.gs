@@ -1345,15 +1345,29 @@ function saveTicket(data) {
     jrfLock.waitLock(10000);
     let jrfStr, today;
     try {
-      const lastRow = sheet.getLastRow();             // includes header
-      const jrfNo   = lastRow;                        // row 1 = header → first ticket = 1
-      jrfStr  = String(jrfNo).padStart(4, '0');       // e.g. "0001"
+      // Generate year-month-sequence JRF #: yyyy-mm-NNN (e.g. "2026-03-001")
+      // The sequence counter resets each month — scan col A to find the highest
+      // existing NNN for this month, then increment by 1.
+      const now    = new Date();
+      const yyyy   = now.getFullYear();
+      const mm     = String(now.getMonth() + 1).padStart(2, '0');
+      const prefix = yyyy + '-' + mm + '-';  // e.g. "2026-03-"
 
-      today = Utilities.formatDate(
-        new Date(),
-        Session.getScriptTimeZone(),
-        'yyyy-MM-dd'
-      );
+      const lastRow = sheet.getLastRow();
+      let maxSeq = 0;
+      if (lastRow > 1) {
+        const jrfValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+        for (const jrfRow of jrfValues) {
+          const val = String(jrfRow[0]);
+          if (val.startsWith(prefix)) {
+            const seq = parseInt(val.replace(prefix, ''), 10);
+            if (!isNaN(seq) && seq > maxSeq) maxSeq = seq;
+          }
+        }
+      }
+      jrfStr = prefix + String(maxSeq + 1).padStart(3, '0');  // e.g. "2026-03-001"
+
+      today = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 
       // sanitizeCell() is applied to all user-supplied string columns to prevent
       // formula injection (values starting with =, +, -, @ being evaluated by Sheets).
@@ -1821,6 +1835,8 @@ function showApprovalConfirmPage(token, action) {
 
     const html =
       '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+      '<meta http-equiv="X-Frame-Options" content="ALLOWALL">' +
+      '<script>if(window!==window.top){window.top.location.href=window.location.href;}<\/script>' +
       '<title>Confirm ' + safeAction + ' — PSHS ZRC IT</title>' +
       '<style>' +
       '*{box-sizing:border-box;margin:0;padding:0}' +
@@ -1854,7 +1870,26 @@ function showApprovalConfirmPage(token, action) {
       '</div>' +
       '<p class="note">Each link can only be used once. If you did not expect this email, please contact the IT Unit.</p>' +
       '<p class="logo">PSHS ZRC IT Unit</p>' +
-      '</div></body></html>';
+      '</div>' +
+      '<div id="fallback-msg" style="display:none;max-width:480px;margin:20px auto;background:#fff3cd;border:1px solid #ffc107;border-radius:6px;padding:16px 20px;font-size:13px;font-family:Arial,sans-serif;color:#856404;">' +
+      '<strong>Having trouble with the buttons?</strong><br>' +
+      'Copy and paste one of these links directly into your browser address bar:<br><br>' +
+      '<strong>Approve:</strong><br>' +
+      '<span style="word-break:break-all;font-size:11px;color:#1a3c6e;" id="approve-url-text"></span><br><br>' +
+      '<strong>Reject:</strong><br>' +
+      '<span style="word-break:break-all;font-size:11px;color:#c0392b;" id="reject-url-text"></span>' +
+      '</div>' +
+      '<script>' +
+      'setTimeout(function(){' +
+      'var fb=document.getElementById("fallback-msg");' +
+      'if(fb){' +
+      'document.getElementById("approve-url-text").textContent="' + approveUrl + '";' +
+      'document.getElementById("reject-url-text").textContent="' + rejectUrl + '";' +
+      'fb.style.display="block";' +
+      '}' +
+      '},3000);' +
+      '<\/script>' +
+      '</body></html>';
 
     return HtmlService.createHtmlOutput(html)
       .setTitle('Confirm ' + safeAction + ' — PSHS ZRC IT')
@@ -2117,6 +2152,11 @@ function sendApprovalEmail(type, jrfNo, ticket) {
     '</tr>' +
     '</table>' +
 
+    '<p style="font-size:11px;color:#888;margin:0 0 12px;line-height:1.5;">' +
+    '<strong>Using Firefox?</strong> If the buttons above do not open, ' +
+    'please copy the link and paste it into your Chrome browser address bar, ' +
+    'or open the email in Gmail on Chrome.' +
+    '</p>' +
     '<p style="font-size:12px;color:#7a8a9a;line-height:1.5;margin:0;">' +
     'Each link can only be used once and expires after 7 days.<br>' +
     'If you did not expect this email, please contact the IT Unit.' +
@@ -2526,17 +2566,45 @@ function approvalHtmlPage(title, message) {
   // other sheet-derived values that must not be rendered as raw HTML.
   const safeTitle   = htmlEncode(title);
   const safeMessage = htmlEncode(message);
-  return HtmlService.createHtmlOutput(
-    '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+
+  const isApproved = title.toLowerCase().includes('approved') || title.toLowerCase().includes('approving');
+  const isRejected = title.toLowerCase().includes('rejected') || title.toLowerCase().includes('reject');
+  const icon  = isApproved ? '✅' : isRejected ? '❌' : 'ℹ️';
+  const color = isApproved ? '#1a7a4a' : isRejected ? '#c0392b' : '#1a3c6e';
+
+  const html =
+    '<!DOCTYPE html><html><head>' +
+    '<meta charset="UTF-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<meta http-equiv="X-Frame-Options" content="ALLOWALL">' +
+    '<script>if(window!==window.top){window.top.location.href=window.location.href;}<\/script>' +
     '<title>' + safeTitle + ' — PSHS ZRC IT</title>' +
-    '<style>*{box-sizing:border-box;margin:0;padding:0}' +
-    'body{font-family:Arial,sans-serif;background:#f0f2f5;display:flex;align-items:center;justify-content:center;min-height:100vh;}' +
-    '.box{background:#fff;padding:40px 48px;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,.1);text-align:center;max-width:440px;}' +
-    'h2{color:#1a3c6e;font-size:20px;margin-bottom:14px;}p{color:#555;font-size:14px;line-height:1.6;}' +
-    '.logo{font-size:11px;color:#aaa;margin-top:22px;}</style></head>' +
-    '<body><div class="box"><h2>' + safeTitle + '</h2><p>' + safeMessage + '</p>' +
-    '<p class="logo">PSHS ZRC IT Unit</p></div></body></html>'
-  ).setTitle(safeTitle + ' — PSHS ZRC IT');
+    '<style>' +
+    '*{box-sizing:border-box;margin:0;padding:0}' +
+    'body{font-family:Arial,sans-serif;background:#f0f4fa;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;}' +
+    '.card{background:#ffffff;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.10);max-width:480px;width:100%;overflow:hidden;}' +
+    '.card-header{background:' + color + ';padding:20px 28px;}' +
+    '.card-header h1{font-size:17px;font-weight:600;color:#ffffff;margin:0;}' +
+    '.card-header p{font-size:11px;color:rgba(255,255,255,.7);margin-top:4px;}' +
+    '.card-body{padding:28px;text-align:center;}' +
+    '.icon{font-size:48px;margin-bottom:14px;}' +
+    '.message{font-size:15px;color:#1a1a1a;line-height:1.6;margin-bottom:20px;}' +
+    '.note{font-size:12px;color:#888;line-height:1.5;}' +
+    '.card-footer{background:#f7f9fc;border-top:1px solid #e8edf4;padding:12px 28px;font-size:11px;color:#aaa;text-align:center;}' +
+    '</style></head>' +
+    '<body><div class="card">' +
+    '<div class="card-header"><h1>' + safeTitle + '</h1><p>PSHS Zamboanga Regional Campus &middot; IT Unit</p></div>' +
+    '<div class="card-body">' +
+    '<div class="icon">' + icon + '</div>' +
+    '<div class="message">' + safeMessage + '</div>' +
+    '<div class="note">This action has been recorded. You may close this tab.<br>The IT Unit has been notified.</div>' +
+    '</div>' +
+    '<div class="card-footer">PSHS ZRC IT Unit &nbsp;&middot;&nbsp; This is an automated response.</div>' +
+    '</div></body></html>';
+
+  return HtmlService.createHtmlOutput(html)
+    .setTitle(safeTitle + ' — PSHS ZRC IT')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 /**
@@ -2692,7 +2760,7 @@ function generateFormPdf(authToken, jrfNo) {
   }
 
   // Write ticket values — top-left cell of each merged range
-  writeCell('O6',  ticket.jrfNumber);                        // IT JRF #:   O6:Q7
+  writeCell('O6',  String(ticket.jrfNumber));                 // IT JRF #:   O6:Q7  — String() preserves zero-padded format e.g. "0001"
   writeCell('E6',  ticket.name,           true);            // Name:       E6:L6       bold
   writeCell('E7',  ticket.position);                        // Position:   E7:L7
   writeCell('E8',  ticket.supervisor,     true);            // Supervisor: E8:L8       bold
@@ -2748,6 +2816,22 @@ function generateFormPdf(authToken, jrfNo) {
   }
 
   SpreadsheetApp.flush();
+
+  // --- System-generated footer (row 41) ---
+  const footerRange = temp.getRange('B41:Q41');
+  footerRange.merge();
+  footerRange.setValue(
+    'This is a system-generated document processed through the PSHS-ZRC IT Help Desk. ' +
+    'Supervisor and Campus Director approvals were obtained via one-time digital approval ' +
+    'links sent to their official school email addresses and are recorded in the system.'
+  );
+  footerRange.setFontSize(7);
+  footerRange.setFontColor('#888888');
+  footerRange.setFontStyle('italic');
+  footerRange.setHorizontalAlignment('center');
+  footerRange.setVerticalAlignment('middle');
+  footerRange.setWrap(true);
+  temp.setRowHeight(41, 30);
 
   // Export as A4 PDF
   const exportUrl =
