@@ -873,46 +873,6 @@ function hasEnoughContext(message) {
  * Used instead of a single-field answer to capture context from the whole chat.
  * Falls back to session.formData.description on API error.
  */
-function buildDescriptionFromHistory(session) {
-  try {
-    const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-    if (!apiKey || !session.history || session.history.length === 0) {
-      return session.formData && session.formData.description ? session.formData.description : '';
-    }
-
-    const historyText = session.history
-      .map(function(turn) { return (turn.role === 'user' ? 'User: ' : 'Bot: ') + turn.text; })
-      .join('\n');
-
-    const systemPrompt =
-      'You are extracting the core IT problem or request from a conversation log. ' +
-      'Read the full conversation and write one comprehensive description of what the user needs. ' +
-      'Include: what the problem/request is, which device/system is involved (if mentioned), ' +
-      'what has already been tried (if mentioned), relevant occasion/event details (for design), ' +
-      'relevant footage date/time/location (for CCTV). ' +
-      'Rules: use only information from the conversation, plain English or Filipino, ' +
-      'maximum 4 sentences, output ONLY the description text.\n' +
-      'Conversation:\n' + historyText;
-
-    const payload = {
-      contents: [{ role: 'user', parts: [{ text: systemPrompt }] }],
-      generationConfig: { temperature: 0.3, maxOutputTokens: 256 },
-    };
-    const response = UrlFetchApp.fetch(GEMINI_ENDPOINT + '?key=' + apiKey, {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true,
-    });
-    const text = JSON.parse(response.getContentText())
-      ?.candidates?.[0]?.content?.parts?.[0]?.text;
-    return text ? text.trim() : (session.formData && session.formData.description ? session.formData.description : '');
-  } catch (err) {
-    console.error('buildDescriptionFromHistory error: ' + err);
-    return session.formData && session.formData.description ? session.formData.description : '';
-  }
-}
-
 /**
  * Extracts a comprehensive description from conversation history AND formally paraphrases
  * it in a single Gemini call — saves one API round-trip vs calling both functions separately.
@@ -1482,6 +1442,13 @@ function submitFormTicket(params) {
     const rawDesc = sanitizeInput(params.description || '');
     if (!rawDesc) {
       return { error: 'no_description', message: 'Please enter a description.' };
+    }
+
+    // Server-side 8-word minimum — mirrors the client-side word count guard in
+    // Index.html. Placed here so a direct API call cannot bypass the UI check.
+    const wordCount = rawDesc.trim().split(/\s+/).filter(Boolean).length;
+    if (wordCount < 8) {
+      return { error: 'too_short', message: 'Description must be at least 8 words. Please provide more detail.' };
     }
 
     // 6. Build description with label prefix, then formally paraphrase
@@ -2057,6 +2024,29 @@ function handleApproval(token, action) {
         }
       }
 
+      // Notify IT staff of the rejection so they are aware without having to
+      // check the dashboard. Wrapped in try/catch — notification failure must
+      // not prevent the rejection from being recorded or the page from loading.
+      try {
+        const itEmails = (PropertiesService.getScriptProperties()
+          .getProperty('IT_STAFF_EMAIL') || '')
+          .split(',').map(function(e) { return e.trim(); }).filter(Boolean);
+        if (itEmails.length > 0) {
+          const itSubject = '[PSHS ZRC] IT JRF #' + jrfNo + ' — Ticket Rejected';
+          const itBody =
+            'IT JRF #' + jrfNo + ' submitted by ' + (ticketRow[2] || 'requester') +
+            ' was rejected at the ' + (type === 'supervisor' ? 'supervisor' : 'Campus Director') + ' stage.\n\n' +
+            'Requester: ' + (ticketRow[2] || '') + '\n' +
+            'Problem: ' + (String(ticketRow[5] || '')).slice(0, 200) + '\n\n' +
+            'No further action is required for this ticket.';
+          MailApp.sendEmail(itEmails.join(','), itSubject, itBody, {
+            name: 'PSHS ZRC IT Help Desk',
+          });
+        }
+      } catch (e) {
+        console.error('handleApproval: IT staff rejection notification failed', e);
+      }
+
       return approvalHtmlPage(
         'Request Rejected',
         'Thank you for your response. Ticket ' + jrfNo + ' has been marked as rejected and the IT unit has been informed.'
@@ -2443,44 +2433,6 @@ function getDashboardUser() {
  * @param {string} email - Requester's Google account email
  * @returns {Array} Up to 5 most recent tickets with status changes
  */
-function getTicketUpdates(email) {
-  try {
-    // email parameter ignored — derived server-side
-    const resolvedEmail = Session.getActiveUser().getEmail();
-    if (!resolvedEmail) return [];
-    const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
-    const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
-    if (!sheet) return [];
-
-    const data    = sheet.getDataRange().getValues();
-    const results = [];
-    const emailLower = resolvedEmail.toLowerCase().trim();
-
-    for (let i = 1; i < data.length; i++) {
-      const rowEmail = String(data[i][17] || '').toLowerCase().trim(); // col R
-      if (rowEmail !== emailLower) continue;
-      const status = String(data[i][7] || '');
-      if (status === 'Pending Supervisor Approval') continue;
-
-      results.push({
-        jrfNo:         String(data[i][0]),
-        problem:       String(data[i][5] || ''),
-        status:        status,
-        assignedStaff: String(data[i][8]  || ''),
-        targetDate:    data[i][13] ? Utilities.formatDate(new Date(data[i][13]), Session.getScriptTimeZone(), 'MM/dd/yyyy') : '',
-        dateCompleted: data[i][9]  ? Utilities.formatDate(new Date(data[i][9]),  Session.getScriptTimeZone(), 'MM/dd/yyyy') : '',
-      });
-    }
-
-    // Sort by IT JRF # descending, return top 5
-    results.sort(function(a, b) { return Number(b.jrfNo) - Number(a.jrfNo); });
-    return results.slice(0, 5);
-  } catch (err) {
-    console.error('getTicketUpdates error: ' + err);
-    return [];
-  }
-}
-
 /**
  * Returns ALL tickets for a given requester email (col R), all statuses.
  * Used by the My Tickets panel in the chatbot UI.
@@ -2516,7 +2468,8 @@ function getMyTickets(email) {
       });
     }
 
-    results.sort(function(a, b) { return Number(b.jrfNo) - Number(a.jrfNo); });
+    // Sort by IT JRF # descending (yyyy-mm-NNN string sort)
+    results.sort(function(a, b) { return String(b.jrfNo).localeCompare(String(a.jrfNo)); });
     return results;
   } catch (err) {
     console.error('getMyTickets error: ' + err);
@@ -2707,6 +2660,10 @@ function generateFormPdf(authToken, jrfNo) {
   }
   if (!row) throw new Error('Ticket not found: ' + jrfNo);
 
+  // tempSheet is declared here so the finally block can always reach it,
+  // even if the error is thrown mid-export before temp was assigned.
+  let tempSheet = null;
+
   const ticket = {
     jrfNumber:      row[0],
     date:           row[1] ? Utilities.formatDate(new Date(row[1]), Session.getScriptTimeZone(), 'MM/dd/yyyy') : '',
@@ -2725,7 +2682,8 @@ function generateFormPdf(authToken, jrfNo) {
     serviceLocation:    row[15] || '',
   };
 
-  // Copy Template tab
+  // Copy Template tab — wrapped in try/finally so the temp sheet is always
+  // deleted even if an error occurs mid-export.
   const template = ss.getSheetByName('Template');
   if (!template) throw new Error('Template sheet not found');
 
@@ -2733,8 +2691,12 @@ function generateFormPdf(authToken, jrfNo) {
   const existing = ss.getSheetByName(tempName);
   if (existing) ss.deleteSheet(existing);
 
-  const temp = template.copyTo(ss);
-  temp.setName(tempName);
+  try {
+  tempSheet = template.copyTo(ss);
+  tempSheet.setName(tempName);
+
+  // Alias so all existing write code below continues to reference `temp`
+  const temp = tempSheet;
 
   // Helper: write short value — centered horizontally and vertically
   function writeCell(range, value, bold) {
@@ -2867,8 +2829,6 @@ function generateFormPdf(authToken, jrfNo) {
     r.setVerticalAlignment('middle');
   }
 
-  SpreadsheetApp.flush();
-
   // --- System-generated footer (row 41) ---
   // Row 40 is intentionally left empty as a visual spacer between the last
   // form content row (39, Confirmed by User) and this footer.
@@ -2912,10 +2872,18 @@ function generateFormPdf(authToken, jrfNo) {
 
   const base64 = Utilities.base64Encode(response.getBlob().getBytes());
 
-  // Clean up temp sheet
-  ss.deleteSheet(temp);
-
   return base64;
+
+  } finally {
+    // Always delete the temp sheet — even if export threw an error.
+    // The inner try/catch prevents a sheet-deletion failure from masking
+    // the original export error.
+    if (tempSheet) {
+      try { ss.deleteSheet(tempSheet); } catch (e) {
+        console.error('generateFormPdf: failed to delete temp sheet', e);
+      }
+    }
+  }
 }
 
 /**

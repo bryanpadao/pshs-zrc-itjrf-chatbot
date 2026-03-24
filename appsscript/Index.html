@@ -229,6 +229,20 @@
 
     .ticket-strip-toggle:hover { color: var(--text-pri); }
 
+    /* "+ N more updates" link rendered as an inline bot bubble button */
+    .more-updates-link {
+      background: none;
+      border: none;
+      padding: 0;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      color: var(--navy-light);
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .more-updates-link:hover { color: var(--text-pri); }
+
     /* ── Sidebar user card (bottom) ───────────────────────────────────────────── */
 
     .sidebar-bottom { padding: 0 12px; flex-shrink: 0; }
@@ -1308,9 +1322,12 @@
 
       // Input stays hidden until the user clicks IT Issue / Repair
 
-      // Fetch all user tickets to populate the MY TICKETS strip
+      // Fetch all user tickets: populate the MY TICKETS strip AND emit
+      // status-change chat bubbles for tickets that changed since last visit.
       google.script.run
-        .withSuccessHandler(onMyTicketsLoaded)
+        .withSuccessHandler(function(tickets) {
+          onMyTicketsFirstLoad(tickets, identity.email);
+        })
         .withFailureHandler(function() { /* strip stays hidden on error */ })
         .getMyTickets(identity.email);
     }
@@ -1352,6 +1369,90 @@
       if (status.includes('IT Assessment'))          return 'Awaiting IT assessment';
       if (status.includes('Director Approval'))      return 'Awaiting director';
       return status;
+    }
+
+    /* Called on page load with the full ticket list for this user.
+       1. Diffs against the localStorage cache (pshs_ticket_cache_[email]) to find
+          tickets whose status changed since the last visit.
+       2. Emits status-change chat bubbles (max 2; a "+ N more" toggle for the rest).
+          Pending Supervisor Approval is excluded — it is the initial state and is not
+          meaningful to surface as a change notification.
+       3. Updates the cache with the current status map.
+       4. Delegates to onMyTicketsLoaded() to render the sidebar strip. */
+    function onMyTicketsFirstLoad(tickets, email) {
+      // Always render the sidebar strip regardless of cache state
+      onMyTicketsLoaded(tickets);
+
+      if (!tickets || tickets.length === 0) return;
+
+      // Load the previously cached { jrfNo: status } map for this user
+      var cacheKey = 'pshs_ticket_cache_' + email;
+      var cachedStatuses = {};
+      try {
+        cachedStatuses = JSON.parse(localStorage.getItem(cacheKey) || '{}');
+      } catch (e) {
+        cachedStatuses = {};
+      }
+
+      // Build the new status map and find tickets whose status changed
+      var newStatusMap = {};
+      tickets.forEach(function(t) { newStatusMap[t.jrfNo] = t.status; });
+
+      // Tickets that changed AND are not in the excluded initial state
+      var changed = tickets.filter(function(t) {
+        return t.status !== 'Pending Supervisor Approval' &&
+               cachedStatuses[t.jrfNo] !== t.status;
+      });
+
+      // Persist the updated cache immediately so a page refresh won't re-show the same bubbles
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify(newStatusMap));
+      } catch (e) { /* quota exceeded — silently skip */ }
+
+      if (changed.length === 0) return;
+
+      // Build one readable line per changed ticket per the CLAUDE.md spec
+      function statusLine(t) {
+        var s = t.status || '';
+        if (s === 'Pending IT Assessment')      return '\u23f3 Ticket #' + t.jrfNo + ': Waiting for IT staff assessment';
+        if (s === 'Pending Director Approval')  return '\u23f3 Ticket #' + t.jrfNo + ': Waiting for Campus Director approval';
+        if (s === 'In Progress')                return '\ud83d\udd27 Ticket #' + t.jrfNo + ': Being worked on' +
+                                                         (t.assignedStaff ? ' by ' + t.assignedStaff : '') +
+                                                         (t.targetDate    ? ' \u2014 target: ' + t.targetDate : '');
+        if (s === 'Completed')                  return '\u2705 Ticket #' + t.jrfNo + ': Resolved' +
+                                                         (t.dateCompleted ? ' on ' + t.dateCompleted : '');
+        if (s === 'Rejected')                   return '\u274c Ticket #' + t.jrfNo + ': Request was not approved';
+        return 'Ticket #' + t.jrfNo + ': ' + s;
+      }
+
+      // Show at most 2 status-change bubbles; surface a toggle for the remainder
+      var MAX_BUBBLES = 2;
+      var shown  = changed.slice(0, MAX_BUBBLES);
+      var hidden = changed.slice(MAX_BUBBLES);
+
+      shown.forEach(function(t) {
+        addMessage(statusLine(t), 'bot');
+      });
+
+      if (hidden.length > 0) {
+        // Render a clickable "+ N more" link as a bot bubble
+        var moreEl = document.createElement('div');
+        moreEl.className = 'message bot';
+        var link = document.createElement('button');
+        link.className   = 'more-updates-link';
+        link.textContent = '+ ' + hidden.length + ' more update' + (hidden.length === 1 ? '' : 's');
+        link.onclick     = openMyTickets;
+        moreEl.appendChild(link);
+
+        var row = document.createElement('div');
+        row.className = 'msg-row bot-row';
+        var avatar = document.createElement('div');
+        avatar.className   = 'bot-avatar';
+        avatar.textContent = '🤖';
+        row.appendChild(avatar);
+        row.appendChild(moreEl);
+        messagesEl.appendChild(row);
+      }
     }
 
     /* Renders the MY TICKETS sidebar strip.
