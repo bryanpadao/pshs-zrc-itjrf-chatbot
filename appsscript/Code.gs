@@ -131,6 +131,40 @@ function htmlEncode(str) {
 }
 
 /**
+ * Returns true if `word` appears as a whole word in `msg` (case-insensitive).
+ * Uses \b word boundaries so 'ok' does not match 'not ok' and 'go' does not
+ * match 'not going'.
+ */
+function containsWord(msg, word) {
+  return new RegExp('\\b' + word + '\\b', 'i').test(msg);
+}
+
+/**
+ * Normalises a person's name for fuzzy comparison: lowercase, strip all
+ * non-alpha characters (periods, commas, Jr., middle initials dots, etc.),
+ * collapse whitespace. Used by resolveAutoSupervisor() self-reference check.
+ */
+function normalizeNameForCompare(name) {
+  return (name || '').toLowerCase()
+    .replace(/[^a-z\s]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Robustly extracts a JSON object from a Gemini response string.
+ * 1. Tries JSON.parse on the full trimmed text.
+ * 2. Falls back to slicing from the first '{' to the last '}'.
+ * Returns the parsed object, or null if both attempts fail.
+ */
+function extractJson(text) {
+  try { return JSON.parse(text.trim()); } catch (e) {}
+  const s = text.indexOf('{'), end = text.lastIndexOf('}');
+  if (s !== -1 && end > s) {
+    try { return JSON.parse(text.slice(s, end + 1)); } catch (e2) {}
+  }
+  return null;
+}
+
+/**
  * Internal auth guard for dashboard functions.
  * Validates that the currently signed-in Google account is an authorized IT staff member.
  * Throws 'Unauthorized' if not in the IT_STAFF_EMAIL list.
@@ -446,6 +480,10 @@ function handleChat(message, session) {
  * @param {object} session
  */
 function handleQuickStart(type, session) {
+  // Reset follow-up flag so it triggers fresh on every new quick-start attempt,
+  // even when the user re-opens the form panel within the same session.
+  session.descriptionFollowUpAsked = false;
+
   // Form-type buttons now use the inline form panel + submitFormTicket() directly.
   // Guard against stale clients that may still send quickStart for these types.
   if (type === 'publication' || type === 'cctv' || type === 'technical') {
@@ -625,18 +663,35 @@ function getNextPrompt(session) {
 function handleCctvLetterCheck(message, session) {
   const lower = message.toLowerCase().trim();
 
-  // Yes phrases (English + Bisaya/Filipino)
-  const yesPatterns = ['ok', 'yes', 'meron', 'naa na', 'naa ko', 'i have', 'i will',
-    'got it', 'noted', "i'll prepare", 'oo', 'sige', 'ok na', 'go', 'i do',
-    'i already have', 'already approved', 'approved na'];
+  // Check NEGATIVE phrases FIRST — these take priority over any positive match.
+  // Use substring matching for multi-word phrases (they are specific enough to be safe).
+  const negativePatterns = ['not ok', 'wala pa', 'dili pa', 'no letter', "i don't have", 'wala ko'];
+  const isNo_negative    = negativePatterns.some(function(p) { return lower.includes(p); });
 
-  // No phrases (English + Bisaya/Filipino)
-  const noPatterns = ["wala pa", "i don't have", "no letter", "wala ko letter",
-    "i haven't", 'not yet', 'wala', 'dili pa', 'wala ko', 'dili ko',
-    'not approved', 'no', 'wala gyud', 'dili pa ko', 'wala pa ko'];
+  // Also check single-word no indicators using word-boundary matching so 'no' does not
+  // match 'noted', and 'wala' does not over-trigger inside longer phrases already above.
+  const isNo = isNo_negative ||
+    (!isNo_negative && (
+      containsWord(lower, 'no') || containsWord(lower, 'wala') ||
+      lower.includes("i haven't") || lower.includes('not yet') ||
+      lower.includes('not approved') || lower.includes('wala gyud') ||
+      lower.includes('dili ko') || lower.includes('dili pa ko') || lower.includes('wala pa ko')
+    ));
 
-  const isYes = yesPatterns.some(function(p) { return lower.includes(p); });
-  const isNo  = noPatterns.some(function(p) { return lower.includes(p); });
+  // Check positive phrases using containsWord() for short tokens to avoid substring false-matches
+  // (e.g. 'ok' inside 'not ok', 'go' inside 'not going').
+  // Multi-word positive phrases are specific enough for includes().
+  const isYes = !isNo && (
+    containsWord(lower, 'yes') || containsWord(lower, 'ok') ||
+    containsWord(lower, 'go')  || containsWord(lower, 'have') ||
+    containsWord(lower, 'mayroon') || containsWord(lower, 'meron') ||
+    containsWord(lower, 'oo')  || containsWord(lower, 'yep') ||
+    containsWord(lower, 'sure') ||
+    lower.includes('naa na') || lower.includes('naa ko') || lower.includes('i will') ||
+    lower.includes('got it') || lower.includes('noted') || lower.includes("i'll prepare") ||
+    lower.includes('sige') || lower.includes('ok na') || lower.includes('i do') ||
+    lower.includes('i already have') || lower.includes('already approved') || lower.includes('approved na')
+  );
 
   if (isNo || (!isYes && session.cctvFollowUpAsked)) {
     // No letter → explain and end
@@ -909,11 +964,12 @@ function buildAndParaphraseDescription(session, labelPrefix) {
       ?.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!text) throw new Error('empty Gemini response');
 
-    // Strip markdown code fences in case Gemini adds them despite instructions
-    const cleaned = text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
-    const parsed  = JSON.parse(cleaned);
+    // extractJson() handles plain JSON, markdown fences, and malformed/prefixed responses
+    // more robustly than a simple regex replace on code fences.
+    const parsed = extractJson(text);
+    if (!parsed) throw new Error('extractJson returned null for: ' + text.slice(0, 120));
     return {
-      rawDesc:   (parsed.raw    || fallback).trim(),
+      rawDesc:    (parsed.raw    || fallback).trim(),
       formalDesc: (parsed.formal || parsed.raw || fallback).trim(),
     };
   } catch (err) {
@@ -1553,6 +1609,27 @@ function getTickets(token) {
       targetDate:         data[i][13] ? Utilities.formatDate(new Date(data[i][13]), Session.getScriptTimeZone(), 'yyyy-MM-dd') : '',
       othersDescription:  data[i][14] || '',
       serviceLocation:    data[i][15] || '',
+      rawDescription:     data[i][16] || '',   // col Q — unparaphrased original description
+      requesterEmail:     data[i][17] || '',   // col R — requester Google account email
+      // departmentFull: department code is not stored in the Tickets sheet, so look it up
+      // from the Employees sheet via requesterEmail (col R). Wrapped in an IIFE so any
+      // lookup error never throws from getTickets().
+      departmentFull: (function() {
+        try {
+          const email = String(data[i][17] || '').toLowerCase().trim();
+          if (!email) return '';
+          const empSheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName('Employees');
+          if (!empSheet) return '';
+          const empData = empSheet.getDataRange().getValues();
+          for (let j = 1; j < empData.length; j++) {
+            if (String(empData[j][3] || '').toLowerCase().trim() === email) {
+              const deptCode = String(empData[j][2] || '');
+              return lookupDepartment(deptCode)?.fullName || deptCode;
+            }
+          }
+          return '';
+        } catch (e) { return ''; }
+      })(),
     });
   }
   return tickets;
@@ -2127,8 +2204,11 @@ function resolveAutoSupervisor(position, department, employeeName) {
     // If the Departments sheet lists this employee as their OWN department's supervisor,
     // they are a division head (e.g. Milo S. Saldon, Mary Sheryl M. Saldon-Raznee,
     // Keisel Van Valerie V. Gamil) — their supervisor is the Campus Director, not themselves.
+    // Use normalizeNameForCompare() to strip middle-initial periods, Jr. suffixes,
+    // and extra whitespace before comparing — prevents missed self-reference for
+    // names like "Juan D. Cruz Jr." vs "Juan D Cruz Jr".
     const isSelf = employeeName &&
-      deptLookup.supervisorName.toLowerCase().trim() === String(employeeName).toLowerCase().trim();
+      normalizeNameForCompare(deptLookup.supervisorName) === normalizeNameForCompare(String(employeeName));
     if (!isSelf) return deptLookup;
     // Fall through to Campus Director
   }
@@ -2187,9 +2267,11 @@ function getUserIdentity() {
       let departmentFull  = deptCode; // fallback
 
       if (deptLookup) {
-        // Self-reference check: if this employee IS the listed supervisor, use Director
+        // Self-reference check: if this employee IS the listed supervisor, use Director.
+        // normalizeNameForCompare() strips periods, Jr. suffixes, and extra spaces so
+        // the match is robust against minor data-entry variations in the sheet.
         const isSelf = deptLookup.supervisorName &&
-          deptLookup.supervisorName.toLowerCase().trim() === name.toLowerCase().trim();
+          normalizeNameForCompare(deptLookup.supervisorName) === normalizeNameForCompare(name);
         if (isSelf) {
           supervisorName  = 'Edman H. Gallamaso';
           supervisorEmail = PropertiesService.getScriptProperties().getProperty('DIRECTOR_EMAIL') || '';
@@ -2692,8 +2774,17 @@ function sendOverdueReminders() {
   const data    = sheet.getDataRange().getValues();
   const today   = new Date();
   const cache   = CacheService.getScriptCache();
-  const itEmail = PropertiesService.getScriptProperties().getProperty('IT_STAFF_EMAIL') || '';
-  let   count   = 0;
+
+  // Split and sanitize the IT_STAFF_EMAIL property so spaces around commas do not
+  // produce malformed addresses (e.g. " dasulit@zrc.pshs.edu.ph").
+  const staffEmails = (PropertiesService.getScriptProperties().getProperty('IT_STAFF_EMAIL') || '')
+    .split(',').map(function(e) { return e.trim(); }).filter(Boolean);
+  if (!staffEmails.length) {
+    console.error('sendOverdueReminders: IT_STAFF_EMAIL not set');
+    return;
+  }
+
+  let count = 0;
 
   for (let i = 1; i < data.length; i++) {
     const status     = String(data[i][7] || '');
@@ -2712,25 +2803,23 @@ function sendOverdueReminders() {
     const assignedTo = String(data[i][8] || '');
     const daysOver   = Math.floor((today - target) / 86400000);
 
-    if (itEmail) {
-      try {
-        MailApp.sendEmail(
-          itEmail,
-          'Overdue IT Ticket — ' + jrfNo,
-          'The following IT Job Request is overdue:\n\n' +
-          'IT JRF #:     ' + jrfNo      + '\n' +
-          'Requester:    ' + name        + '\n' +
-          'Problem:      ' + problem     + '\n' +
-          'Target Date:  ' + Utilities.formatDate(target, Session.getScriptTimeZone(), 'MM/dd/yyyy') + '\n' +
-          'Days Overdue: ' + daysOver    + '\n' +
-          'Assigned To:  ' + (assignedTo || 'Unassigned') + '\n\n' +
-          'Please update the ticket status on the IT Dashboard.'
-        );
-        cache.put(cacheKey, '1', 72000); // 20-hour TTL
-        count++;
-      } catch (emailErr) {
-        Logger.log('sendOverdueReminders email error: ' + emailErr);
-      }
+    try {
+      MailApp.sendEmail(
+        staffEmails.join(','),
+        'Overdue IT Ticket — ' + jrfNo,
+        'The following IT Job Request is overdue:\n\n' +
+        'IT JRF #:     ' + jrfNo      + '\n' +
+        'Requester:    ' + name        + '\n' +
+        'Problem:      ' + problem     + '\n' +
+        'Target Date:  ' + Utilities.formatDate(target, Session.getScriptTimeZone(), 'MM/dd/yyyy') + '\n' +
+        'Days Overdue: ' + daysOver    + '\n' +
+        'Assigned To:  ' + (assignedTo || 'Unassigned') + '\n\n' +
+        'Please update the ticket status on the IT Dashboard.'
+      );
+      cache.put(cacheKey, '1', 72000); // 20-hour TTL
+      count++;
+    } catch (emailErr) {
+      Logger.log('sendOverdueReminders email error: ' + emailErr);
     }
   }
   Logger.log('sendOverdueReminders: ' + count + ' reminder(s) sent');
@@ -2790,10 +2879,14 @@ function archiveOldTickets() {
   // Iterate from bottom so row indices stay valid
   for (let i = data.length - 1; i >= 1; i--) {
     const status = String(data[i][7] || '');
-    const date   = data[i][1];
-    if (!date) continue;
     if (status !== 'Completed' && status !== 'Rejected') continue;
-    if (new Date(date).getTime() >= cutoff.getTime()) continue;
+
+    // For Completed tickets use col J (Date Completed, index 9) — a ticket submitted
+    // long ago but completed recently must NOT be archived prematurely.
+    // For Rejected tickets col J is empty, so fall back to col B (submission date, index 1).
+    const refDate = (status === 'Completed' && data[i][9]) ? data[i][9] : data[i][1];
+    if (!refDate) continue;
+    if (new Date(refDate).getTime() >= cutoff.getTime()) continue;
 
     aSheet.appendRow(data[i]);
     tSheet.deleteRow(i + 1);
