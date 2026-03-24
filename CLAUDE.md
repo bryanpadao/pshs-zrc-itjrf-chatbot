@@ -58,24 +58,28 @@
 [Faculty / Staff browser]
         |
         | google.script.run.getUserIdentity()  ← on page load
-        | google.script.run.getTicketUpdates() ← after identity resolved
+        | google.script.run.getTicketUpdates() ← after identity resolved (email param ignored; identity derived server-side)
         | google.script.run.processChat({ message, sessionId, userIdentity })
+        | google.script.run.submitFormTicket(params)  ← form-panel submissions (publication/cctv/technical)
         v
-[Index.html] --> [processChat() / doPost(e) in Code.gs]
+[Index.html] --> [Code.gs server functions via google.script.run]
                         |
                         |-- getUserIdentity()    reads Google account email, looks up Employees sheet
-                        |-- getTicketUpdates()   returns recent status changes for this user
-                        |-- getMyTickets()       returns all tickets for this user
+                        |-- getTicketUpdates()   returns recent status changes (email param ignored; uses Session.getActiveUser())
+                        |-- getMyTickets()       returns all tickets for this user (email param ignored; uses Session.getActiveUser())
                         |-- handleChat()         RAG + Gemini, detects %%FILE_TICKET%% signal
                         |-- handleFormStep()     collects description step only (identity pre-filled)
                         |-- handleCctvLetterCheck()  CCTV letter gate
                         |-- handleConfirm()      yes/no before saving
+                        |-- submitFormTicket()   form-panel path: re-verifies identity server-side, paraphrases, saves ticket
                         |-- saveTicket()         appends row (cols A–R); sends supervisor approval email
                         v
               [Google Sheet: Tickets tab]
 
 [Supervisor / Director email client]
         | clicks Approve/Reject link → doGet(?token=X&action=approve|reject)
+        | first visit → showApprovalConfirmPage() (two-step: prevents bot prefetch from silently approving)
+        | approver clicks Confirm → doGet(?token=X&action=Y&confirm=1) → handleApproval()
         v
 [handleApproval()] → updates ticket status → notifies IT staff by email
 
@@ -288,9 +292,8 @@ const MAX_MESSAGE_LENGTH       = 1000;  // max characters accepted per user mess
 ```
 
 ### Entry points
-- **`doGet(e)`** — serves `Index.html` by default (browser tab title: `PSHS-ZRC IT Unit Help Desk`); `Dashboard.html` when `?page=dashboard` (title: `PSHS-ZRC IT Unit Dashboard`); routes to `handleApproval()` when `?token=X&action=Y`
-- **`doPost(e)`** — routes to `handleChat`, `handleFormStep`, `handleConfirmName`, `handleConfirm`, or `handleCctvLetterCheck` based on `session.state`
-- **`processChat(params)`** — called from `Index.html` via `google.script.run`; accepts `{ message, sessionId, userIdentity?, quickStart? }`; sanitizes input; loads/saves session via CacheService; enforces per-session message limit; pre-fills identity fields from `userIdentity` on first call if provided; if `quickStart` key is set (e.g. `'publication'`, `'cctv'`, `'technical'`), routes directly to `handleQuickStart()` skipping Gemini
+- **`doGet(e)`** — serves `Index.html` by default (browser tab title: `PSHS-ZRC IT Unit Help Desk`); `Dashboard.html` when `?page=dashboard` (title: `PSHS-ZRC IT Unit Dashboard`); when `?token=X&action=Y` is present: if `?confirm=1` is also set, calls `handleApproval(token, action)`; otherwise calls `showApprovalConfirmPage(token, action)` — a two-step flow that prevents email scanner/prefetch bots from silently approving tickets
+- **`processChat(params)`** — called from `Index.html` via `google.script.run`; accepts `{ message, sessionId, userIdentity?, quickStart? }`; validates `sessionId` against UUID v4 format (`/^[0-9a-f-]{36}$/i`) — rejects invalid IDs immediately; sanitizes input; loads/saves session via CacheService; enforces per-session message limit; pre-fills identity fields from `userIdentity` on first call if provided; if `quickStart` key is set (e.g. `'publication'`, `'cctv'`, `'technical'`), routes directly to `handleQuickStart()` skipping Gemini
 
 ### Quick-start buttons (Index.html landing)
 
@@ -368,11 +371,12 @@ A single `session.strikeCount` is shared across both `handleChat()` and `handleF
 Resets to 0 on any valid, non-flagged input in either handler.
 
 `isGibberish(text)` flags text if any of these conditions hold:
+- **BISAYA_WHITELIST** is checked first — if the input contains any listed word (e.g. `dili`, `wala`, `nagprint`, `walainternet`), the function short-circuits to `false` immediately
+- Strings whose trimmed length (or cleaned alpha length) is **< 8 chars** are never flagged
 1. The whole string (with up to 3 trailing chars) is one repeating 2–4 char n-gram (e.g. `asdasdasd`, `vcvcvcvc`)
 2. Fewer than 40% unique characters for strings ≥ 8 chars (e.g. `asdasdasdvcvcv`)
-3. Vowel ratio < 10% for strings > 6 chars (e.g. `qwrtpsdfg`)
-4. Consecutive consonant run of 6+ letters (e.g. `sdfjklqw`)
-Strings shorter than 4 chars are never flagged.
+3. Vowel ratio **< 7%** for strings **> 12 chars** (e.g. `qwrtpsdfghjklm`) — threshold raised from 10%/>6 to avoid false positives on short Bisaya/Filipino words
+4. Consecutive consonant run of **8+** letters (e.g. `sdfjklqwmnvb`) — threshold raised from 6 to avoid false positives on Bisaya words like `nagprint`, `nagcrash`
 
 **Strike behavior:**
 - **Strike 1** — warning + re-ask / continue conversation
@@ -390,45 +394,51 @@ Called after name confirmation (yes path) and after manual department entry. Alw
 
 ### Security functions
 - **`sanitizeInput(text)`** — trims, enforces MAX_MESSAGE_LENGTH, strips `%%SIGNAL%%` and injection delimiters
-- **`checkGlobalRateLimit()`** — CacheService sliding window; throws if > MAX_SUBMISSIONS_PER_HOUR in 60 min
-- **`dashboardLogin / validateDashboardSession / dashboardLogout`** — dead code, kept in Code.gs for reference only. Not called anywhere. Safe to delete in a future cleanup.
-- **`_requireDashboardAuth(token)`** — internal guard; validates via `Session.getActiveUser()` against `IT_STAFF_EMAIL`; falls back to token check if `getActiveUser()` throws
+- **`sanitizeCell(value)`** — prepends a single-quote if `value` starts with `=`, `+`, `-`, or `@` to prevent formula injection in Sheets; applied to all user-supplied string columns in `saveTicket()` before `appendRow()`
+- **`htmlEncode(str)`** — HTML-encodes `&`, `<`, `>`, `"`, `'` for safe interpolation into `HtmlService` output; prevents XSS when sheet values are embedded in approval email HTML
+- **`checkGlobalRateLimit()`** — LockService-wrapped (`LockService.getScriptLock()`) CacheService sliding window; throws if > MAX_SUBMISSIONS_PER_HOUR in 60 min; lock prevents race condition where two simultaneous submissions both pass a single remaining slot
+- **`_requireDashboardAuth()`** — internal guard; validates that `Session.getActiveUser().getEmail()` is in the `IT_STAFF_EMAIL` allow-list; throws `'Unauthorized'` if not. The `token` parameter is accepted but ignored — kept so call sites that still pass a token argument do not need updating
 
 ### Backend functions
 - **`getUserIdentity()`** — reads Google account email via `Session.getActiveUser()`; looks up Employees sheet col D; returns `{ email, name, position, department, departmentFull, supervisor, supervisorEmail }` or `{ error }` object
 - **`getDashboardUser()`** — returns `{ email, authorized }` for dashboard auth check; used by Dashboard on load
-- **`getTicketUpdates(email)`** — returns up to 5 recent ticket status updates for requester email (col R), excluding Pending Supervisor Approval status
-- **`getMyTickets(email)`** — returns all tickets for a requester email (col R), all statuses, sorted by IT JRF # descending
+- **`getTicketUpdates(email)`** — returns up to 5 recent ticket status updates, excluding `Pending Supervisor Approval`; the `email` parameter is ignored — identity is derived server-side from `Session.getActiveUser().getEmail()` to prevent one user querying another user's tickets
+- **`getMyTickets(email)`** — returns all tickets for the current user (col R), all statuses, sorted by IT JRF # descending; the `email` parameter is ignored — identity derived server-side (same security reason as above)
 - **`hasEnoughContext(message)`** — lightweight Gemini call; returns bool — true if message has enough detail to file a ticket; false increments `session.strikeCount` (in chat flow); fails open (returns true) on API error
 - **`buildDescriptionFromHistory(session)`** — Gemini call to extract a comprehensive description from the full chat history; falls back to `session.formData.description` on error
 - **`paraphraseDescription(rawText)`** — Gemini call to formally paraphrase description in Philippine government document style; returns rawText unchanged on error
 - **`handleCctvLetterCheck(message, session)`** — handles `cctv_letter_check` state; yes = proceed to description; no = explain requirement + end conversation
 - **`searchKnowledgeBase(query)`** — keyword scoring against KnowledgeBase sheet, returns top 3 or null
 - **`callGemini(message, history, kbContext)`** — Gemini API call with system prompt + KB context + history
-- **`submitFormTicket(params)`** — handles form-panel submissions for `publication`/`cctv`/`technical`; validates identity + rate limits + CCTV letter flag; paraphrases description; calls `saveTicket()`; returns `{ jrfNo, rawDesc, name, departmentFull, supervisor }` on success or `{ error, message }` on failure. Does NOT call `hasEnoughContext()` — its IT-repair prompt incorrectly rejects design/CCTV/technical requests; the 8-word minimum is sufficient for forms.
-- **`saveTicket(data)`** — calls `checkGlobalRateLimit()` + per-user rate limit (3/day); appends 18-column row (A–R); sends supervisor approval email
+- **`submitFormTicket(params)`** — handles form-panel submissions for `publication`/`cctv`/`technical`; `params.userIdentity` is intentionally ignored — identity is re-verified server-side via `getUserIdentity()` to prevent spoofing; validates rate limits + CCTV letter flag; paraphrases description; calls `saveTicket()`; returns `{ jrfNo, rawDesc, name, departmentFull, supervisor }` on success or `{ error, message }` on failure. Does NOT call `hasEnoughContext()` — its IT-repair prompt incorrectly rejects design/CCTV/technical requests; the 8-word minimum is sufficient for forms.
+- **`saveTicket(data)`** — calls `checkGlobalRateLimit()` + per-user rate limit (3/day); IT JRF # generation and `appendRow()` are wrapped in `LockService.getScriptLock()` to prevent duplicate JRF numbers under concurrent submissions; applies `sanitizeCell()` to all user-supplied columns before `appendRow()`; sends supervisor approval email
 - **`appendHistory(history, userText, modelText)`** — rolling 20-message history (max 10 turns)
 - **`isGibberish(text)`** — detects keyboard mashing; used by `handleChat()` and `handleFormStep()` (both increment `session.strikeCount`); `handleFormStep()` only checks on non-description steps
-- **`resolveAutoSupervisor(position, department, employeeName)`** — resolves supervisor from Departments sheet; falls back to Campus Director; detects division heads via self-reference check
-- **`sendOverdueReminders()`** — emails IT staff about overdue In Progress tickets; set as daily time-driven trigger (8:00–9:00 AM)
+- **`resolveAutoSupervisor(position, department, employeeName)`** — resolves supervisor from Departments sheet; falls back to Campus Director; detects division heads via self-reference check using `normalizeNameForCompare()` on both sides of the comparison
+- **`sendOverdueReminders()`** — emails IT staff about overdue `In Progress` tickets; splits `IT_STAFF_EMAIL` on commas with `.trim()` to avoid malformed addresses; returns early if the property is empty; set as daily time-driven trigger (8:00–9:00 AM)
 - **`cleanupApprovalTokens()`** — deletes Approvals rows older than 30 days; set as weekly trigger (Monday 2:00–3:00 AM)
-- **`archiveOldTickets()`** — moves Completed/Rejected tickets older than 90 days to Archive sheet; set as monthly trigger (1st of month 3:00–4:00 AM)
+- **`archiveOldTickets()`** — moves `Completed`/`Rejected` tickets older than 90 days to Archive sheet; uses col J (Date Completed) as the reference date for `Completed` tickets so a recently-completed old ticket is not archived prematurely; falls back to col B (submission date) for `Rejected` tickets (col J is empty); set as monthly trigger (1st of month 3:00–4:00 AM)
+- **`extractJson(text)`** — two-pass JSON parser helper: tries `JSON.parse` on the full trimmed text first, then falls back to slicing from the first `{` to the last `}`; returns parsed object or `null`
+- **`containsWord(msg, word)`** — returns true if `word` appears as a whole word in `msg` using `\b` word-boundary regex (case-insensitive); prevents partial-word false matches
+- **`normalizeNameForCompare(name)`** — strips non-alpha characters (periods, commas, `Jr.`, middle-initial dots), collapses whitespace, lowercases; used by `resolveAutoSupervisor()` for fuzzy self-reference comparison
 
 ### Approval functions
 - **`sendApprovalEmail(type, jrfNo, ticket)`** — generates UUID token, stores in Approvals sheet (cols A–E, col E = Created ISO timestamp), sends HTML approval email via `GmailApp.sendEmail()` with plain-text fallback. HTML layout: dark navy header (`#1a3c6e`), alternating detail table rows, navy left-border problem block, gold left-border assessment block (director email only), styled Approve/Reject buttons. Subject: `[PSHS ZRC] IT Job Request #${jrfNo} — Awaiting your approval`. Email table label: `IT JRF #`. IT staff notification subjects: `IT JRF {jrfNo}: Supervisor Approved — Please Submit Assessment` / `IT JRF {jrfNo}: Director Approved — Proceed with Repair`. Full department name resolved via `lookupDepartment(ticket.department).fullName` (e.g. `"SSD"` → `"Student Services Division"`). Recipient: `ticket.supervisorEmail` (supervisor) or `DIRECTOR_EMAIL` (director). Token storage logic unchanged.
-- **`handleApproval(token, action)`** — validates token; checks 7-day expiry against col E (Created); updates ticket status; notifies IT staff
+- **`handleApproval(token, action)`** — validates token; checks 7-day expiry against col E (Created); updates ticket status; notifies IT staff. Only reached after the approver explicitly clicks Confirm on the intermediate page — never called directly from the first link click.
+- **`showApprovalConfirmPage(token, action)`** — intermediate confirmation page rendered on the first approval link click; shows ticket summary and Approve/Reject buttons that link to `?token=X&action=Y&confirm=1`; prevents email scanner bots from silently approving/rejecting
 - **`approvalHtmlPage(title, message)`** — returns styled HTML response for approval link clicks
 - **`getStaffEmail(name)`** — looks up email from optional `Staff` sheet by name
 - **`lookupDepartment(dept)`** — looks up supervisor name + email + full office name from `Departments` sheet; matches on abbreviated code (col A) or full name (col D)
 - **`lookupEmployee(name)`** — kept for backward compatibility; no longer called in main flow (identity now resolved by `getUserIdentity()`)
 
-### Dashboard functions (all call `_requireDashboardAuth(token)` internally)
-- **`getTickets(token)`** — returns array of ticket objects (all 18 fields including `dateCompleted`)
+### Dashboard functions (all call `_requireDashboardAuth()` internally)
+- **`getTickets(token)`** — returns array of ticket objects (all 18 fields A–R including `rawDescription` (col Q) and `requesterEmail` (col R)); also resolves `departmentFull` from the Employees sheet via `requesterEmail`
 - **`submitAssessment(token, jrfNo, assignedStaff, recommendation, assessment, targetDate, othersDescription, serviceLocation)`** — saves cols G/H/I/K/N/O/P; sends director approval email
 - **`updateTicketStatus(token, jrfNo, actionTaken, taskResult)`** — validates; writes cols H/J/L/M; requires status = `In Progress`
 - **`updateTicketDetails(token, jrfNo, name, position, supervisor, problem)`** — corrects cols C/D/E/F
 - **`assignStaff(token, jrfNo, staffName)`** — writes col I only
-- **`generateFormPdf(authToken, jrfNo)`** — copies Template, fills all cells, exports A4 PDF as base64, deletes temp sheet (`authToken` avoids collision with internal OAuth token variable)
+- **`generateFormPdf(authToken, jrfNo)`** — copies Template, fills all cells, exports A4 PDF as base64, deletes temp sheet (`authToken` avoids collision with internal OAuth token variable); passes auth check when `authToken === '__internal__'` (used by `getBulkPdfData()`)
+- **`getBulkPdfData(period, year, month)`** — batch PDF generation for the Reports panel; `period` is `'weekly'` (last Mon–Sun) or `'monthly'` (year + month); collects `Completed` tickets with `dateCompleted` in range (col J); returns `{ pdfs, label, count }` where each entry has `{ jrfNo, base64 }`; hard cap of 20 PDFs — returns error label if exceeded
 
 ---
 
@@ -535,7 +545,7 @@ Messaging-app style (iMessage/WhatsApp inspired). Primary color: `#1a3c6e` (PSHS
 - Shown when user clicks a form-type quick-start button; hides `.chat-messages` and `.chat-input`, shows `#form-panel`
 - **Identity strip** (top): read-only compact summary — 🔒 Name · Position · departmentFull · Supervisor (font-size 12px, muted)
 - **CCTV only**: amber warning card (⚠️ Data Privacy Act requirement) + required checkbox. Description textarea and submit button are disabled until checkbox is checked.
-- **Description textarea**: required, minimum 8 words enforced — live word count shown below (`n words ✓` green / `n words — please add more detail` red). Submit button disabled until word count ≥ 8.
+- **Description textarea**: required, minimum 8 words enforced — live word count shown below (`n words ✓` green / `n words — please add more detail (minimum 8)` red). Submit button disabled until word count ≥ 8.
 - **Submit button** (`Submit Request →`): full-width, `#1a3c6e`, disabled until valid. Shows `⏳ Submitting…` while the server call is in progress.
 - **On submit**: calls `submitFormTicket()` → shows success bubble in chat on success, then `lockChat()`
 - **On error**: re-enables button, shows inline error inside the form panel
@@ -590,17 +600,20 @@ Served at `?page=dashboard`. Uses `google.script.run` (no HTTP fetch).
 - Body: `<div class="dash-body">` — flex column, `padding: 24px 28px`, `gap: 20px`.
 
 ### Features
-- **Login**: calls `getDashboardUser()` on load; if authorized (email in `IT_STAFF_EMAIL`) — show dashboard; if not — show access denied page. No password. Uses `Session.getActiveUser().getEmail()`. Login flicker prevented by synchronous `<head>` script that adds `is-authorized` class to `<html>` if `sessionStorage.dashAuthorized === '1'`.
-- **Logout button**: in topbar right side; clears `sessionStorage.dashAuthorized` and shows access denied overlay
+- **Login**: calls `getDashboardUser()` on load; if authorized (email in `IT_STAFF_EMAIL`) — show dashboard; if not — show access denied page. No password. Uses `Session.getActiveUser().getEmail()`. Login flicker prevented by synchronous `<head>` script that adds `is-authorized` class to `<html>` if `localStorage.getItem('dashAuthorized') === '1'`.
+- **Logout button**: in topbar right side; clears `localStorage.removeItem('dashAuthorized')` and shows access denied overlay
 - **Topbar user pill**: shows initials + short name derived from email (e.g. `pgpadao` → `PG`, `Philip Padao`) populated on auth success
 - **Stats row**: 4-card `.stats-row` grid — Total / Active / Completed / Rejected. Each card has a `.stat-icon` wrap (colored circle) and `.stat-value` + `.stat-label`.
 - **Toolbar**: always-visible row with `.search-box` (placeholder: `Search by IT JRF #, name, problem, staff…`) + `.filter-chips` div containing filter buttons as `.chip` elements. Active chip uses `.active-chip` class. Reports chip is always `.reports-chip` (navy fill).
 - **Filter chips**: All / Pending Approval / Pending Assessment / Pending Director / In Progress / Completed / Rejected. `setFilter()` calls `querySelectorAll('.chip').forEach(b => b.classList.remove('active-chip'))` then adds `active-chip` to clicked chip.
 - **Sortable columns**: IT JRF #, Date, Status — click header to sort ascending/descending (▲ ▼ indicator)
+- **Pagination**: table shows 15 rows per page (`ROWS_PER_PAGE = 15`); Prev/Next buttons below table; `currentPage` resets to 1 on filter change, search change, and data reload; `getFilteredRows()` is the shared helper used by both `renderTable()` and `updatePaginationBar()`
 - **Reports panel** (Reports chip — always navy filled):
+  - Loading guard: if `allTickets` is empty when Reports is opened, shows a "please wait" message and returns early
   - Monthly Summary table (year/month dropdowns, CSV export, avg. resolution days)
   - Overdue Tickets table (open > 7 days; red highlight at 14+ days) — column header: `IT JRF #`
   - Horizontal CSS bar chart by recommendation/service type
+  - **Bulk PDF Download** section: weekly (last Mon–Sun) and monthly (year + month dropdowns) batch download; calls `getBulkPdfData()` in Code.gs; 20-PDF safety cap — shows error label if exceeded
   - Report section headings use `<div class="report-section-title">` with `::after` trailing rule (not `<h2>`)
 - **Table columns**: IT JRF #, Date, Name, Position, Problem, Recommendation, Assigned Staff, Status, Actions
 - **Edit button** (every row, class `btn-action btn-edit`): opens Edit modal — has `.modal-ticket-summary` card at top
@@ -615,6 +628,8 @@ Served at `?page=dashboard`. Uses `google.script.run` (no HTTP fetch).
 
 ### Modal structure
 All three modals (Edit, Assess, Complete) use: `.modal-overlay` → `.modal` → `.modal-header` + `.modal-body` + `.modal-footer`. The `.modal-header` has `.modal-title` and a `.modal-close` circle button. Each modal starts with a `.modal-ticket-summary` card inside `.modal-body` (see DESIGN.md §4-AD).
+
+**Submit behavior**: modals stay open until the server call succeeds. On submit, the button is disabled and shows a loading label (`Sending…` / `Saving…` / `Submitting…`). On success the modal closes and the table updates in-place. On failure the modal remains open and an error message appears in `#[modal]-error` (e.g. `#assess-error`, `#complete-error`, `#edit-error`).
 
 ### Assess modal fields
 - `.modal-ticket-summary` card (populated by `openAssessModal()`)
@@ -635,6 +650,7 @@ All three modals (Edit, Assess, Complete) use: `.modal-overlay` → `.modal` →
 
 ### Edit modal fields
 - `.modal-ticket-summary` card (populated by `openEditModal()`)
+- **Original Description** — read-only `<textarea id="edit-raw-desc">` showing col Q (raw unparaphrased description); populated from the `data-raw-desc` attribute on the `<tr>` row element, set during `renderTable()`
 - Full Name — **required**
 - Position / Designation
 - Immediate Supervisor
@@ -708,7 +724,7 @@ ALLOWED_DOMAIN   → (optional) e.g. zrc.pshs.edu.ph — restricts chatbot to th
 | Dashboard login "Unrecognized email" | Email must exactly match a value in the `IT_STAFF_EMAIL` script property (comma-separated) |
 | Approval token expiry | Tokens have a 7-day TTL enforced via the `Created` timestamp in Approvals col E |
 | Dashboard session expiry during use | `onServerError()` detects "Session expired" and redirects to login overlay automatically |
-| Dashboard logs out on page refresh | Apps Script iframe URL changes on each load — `sessionStorage` (scoped to iframe URL) is empty after refresh. Fixed by using `localStorage` instead; server-side CacheService TTL (6 h) still expires the token |
+| Dashboard logs out on page refresh | Apps Script iframe URL changes on each load — `sessionStorage` (scoped to iframe URL) is empty after refresh. Fixed: all `dashAuthorized` reads/writes use `localStorage` throughout (both the `<head>` flicker-fix script and all auth guard locations) |
 | DASHBOARD_SESSION_TTL was 28800 (8 h) | CacheService max is 21600 s (6 h) — values above this throw. Fixed to 21600 |
 | Index.html background image not showing | Drive file must be shared as "Anyone with the link — Viewer" for the thumbnail URL to load |
 | Mobile chat UI showing as card (not full-screen) | `position: fixed; inset: 0` on `.chat-container`; `width/height` relative values don't work inside Apps Script iframe |
@@ -725,6 +741,11 @@ ALLOWED_DOMAIN   → (optional) e.g. zrc.pshs.edu.ph — restricts chatbot to th
 | Per-user rate limit resets at midnight PHT, not 24h from first submission | TTL calculated as seconds remaining until midnight PHT (UTC+8) — intentional, matches a working day reset |
 | CCTV letter checkbox can be bypassed client-side | `submitFormTicket()` also validates `cctvLetterConfirmed` server-side — belt-and-suspenders |
 | `hasEnoughContext()` was rejecting valid form submissions | Removed from `submitFormTicket()` — its Gemini prompt is tuned for IT-repair chat (device/system/what happened) and incorrectly rejects publication/design/technical/CCTV requests. The 8-word minimum on the form is sufficient validation for structured submissions. |
+| Email scanner bots silently approving tickets | `doGet` now uses a two-step flow: first click renders `showApprovalConfirmPage()` (confirmation page); ticket state only changes when the approver clicks Confirm, which adds `?confirm=1` and calls `handleApproval()` |
+| Formula injection via user-supplied sheet values | `sanitizeCell()` prepends a single-quote to values starting with `=`, `+`, `-`, `@` before `appendRow()` in `saveTicket()` — prevents Sheets from evaluating them as formulas |
+| Duplicate IT JRF numbers under concurrent submissions | `saveTicket()` wraps JRF# generation and `appendRow()` in `LockService.getScriptLock()` — only one request at a time can read the last row and write the next row |
+| Race condition in global rate limit | `checkGlobalRateLimit()` wraps the read-modify-write of the timestamp array in `LockService.getScriptLock()` — two simultaneous submissions can no longer both pass a single remaining slot |
+| `getMyTickets`/`getTicketUpdates` email param ignored | The `email` parameter accepted by both functions is intentionally ignored; identity is derived server-side from `Session.getActiveUser()` to prevent a user from querying another user's tickets by passing a different email |
 
 ---
 
