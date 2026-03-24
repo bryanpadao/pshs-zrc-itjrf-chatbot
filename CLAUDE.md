@@ -214,7 +214,7 @@ Official ITJRF layout. `generateFormPdf()` copies this tab, fills it, exports PD
 | B39:E39 | Date Completed | ticket.dateCompleted → **B39** | auto from sheet |
 | G39:K39 | Serviced by | ticket.assignedStaff → **G39** | **bold** |
 | M39:Q39 | Confirmed by User | ticket.name → **M39** | **bold** |
-| B41:Q41 | System footer | Static text — system-generated notice with digital approval statement | italic, 7pt, gray, centered, row height 30 |
+| B41:Q41 | System footer | Static system-generated notice with digital approval statement | italic, 7pt, #888888, centered, row height 30 |
 
 **Service location checkboxes — row 21 (from `ticket.serviceLocation`, col P):**
 

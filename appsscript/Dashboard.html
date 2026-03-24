@@ -261,7 +261,9 @@
     .btn-assess   { background: rgba(42,95,170,0.2);   border: 1px solid rgba(42,95,170,0.4);   color: #7ab0f0; }
     .btn-complete { background: rgba(29,158,117,0.15); border: 1px solid rgba(29,158,117,0.35); color: #4dd4a8; }
     .btn-pdf      { background: rgba(201,168,76,0.15); border: 1px solid rgba(201,168,76,0.35); color: var(--gold); }
-    .btn-awaiting { background: transparent; border: 1px solid var(--border); color: var(--text-muted); cursor: default; pointer-events: none; }
+    .btn-awaiting { background: transparent; border: 1px solid var(--border); color: var(--text-muted); cursor: default; pointer-events: none; white-space: nowrap; display: inline-block; max-width: 140px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+    .actions-cell { white-space: nowrap; min-width: 180px; }
+    .status-cell  { white-space: nowrap; min-width: 160px; }
 
     /* ── Loading / empty ─────────────────────────────────────────────────────── */
 
@@ -477,17 +479,132 @@
     /* ── Auth flicker fix ────────────────────────────────────────────────────── */
     .is-authorized #access-denied-overlay { display: none !important; }
 
-    @media (max-width: 600px) {
+    /* ── Table scroll wrapper (horizontal scroll on small screens) ───────────── */
+    .table-scroll-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+    /* ══════════════════════════════════════════════════════════════════════════
+       RESPONSIVE BREAKPOINTS
+       Mobile-first additions layered on top of the base styles above.
+       ══════════════════════════════════════════════════════════════════════════ */
+
+    /* ── Tablet — up to 1024px ───────────────────────────────────────────────── */
+    @media (max-width: 1024px) {
+      /* Stats: 2×2 grid on tablet */
+      .stats-row { grid-template-columns: repeat(2, 1fr); }
+
+      /* Slightly tighter body padding */
+      .dash-body { padding: 20px 20px; }
+
+      /* Search box can shrink a bit */
+      .search-box { width: 200px; }
+
+      /* Bar chart label narrower */
+      .bar-label { width: 160px; min-width: 120px; }
+    }
+
+    /* ── Mobile landscape / small tablet — up to 768px ──────────────────────── */
+    @media (max-width: 768px) {
       body { padding: 0; }
-      .shell { border-radius: 0; }
-      .topbar { padding: 0 16px; height: auto; padding-top: 12px; padding-bottom: 12px; flex-wrap: wrap; gap: 8px; }
-      .topbar-meta, .topbar-user { display: none; }
-      .dash-body { padding: 16px; gap: 16px; }
-      .stats-row { grid-template-columns: 1fr 1fr; }
-      .modal { margin: 16px; }
+
+      .shell {
+        border-radius: 0;
+        /* Ensure it fills the viewport width without overflowing */
+        width: 100%;
+        max-width: 100%;
+        margin: 0;
+      }
+
+      /* Topbar: stack left/right vertically */
+      .topbar {
+        height: auto;
+        padding: 12px 16px;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+      }
+      .topbar-right {
+        width: 100%;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      /* Push refresh + sign-out to the right on small topbar */
+      .btn-refresh { margin-left: auto; }
+
+      /* Hide verbose meta text; keep user pill */
+      .topbar-meta { display: none; }
+
+      /* Reduce logo text a touch */
+      .logo-name { font-size: 13px; }
+      .topbar-section { font-size: 12px; }
+
+      /* Body */
+      .dash-body { padding: 14px 14px; gap: 14px; }
+
+      /* Stats: 2×2 */
+      .stats-row { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+      .stat-value { font-size: 22px; }
+
+      /* Toolbar: search full-width on its own row */
+      .toolbar { flex-direction: column; align-items: stretch; gap: 8px; }
+      .search-box { width: 100%; }
+      .filter-chips { flex-wrap: wrap; }
+      /* Reports chip no longer needs auto margin when chips wrap */
+      .chip.reports-chip { margin-left: 0; }
+
+      /* Modal: constrained width with side margin */
+      .modal {
+        width: min(90vw, 520px);
+        max-width: 90vw;
+        margin: 0 auto;
+      }
+
+      /* Modal two-column field row → single column */
       .modal-field-row { grid-template-columns: 1fr; }
+
+      /* Report sections */
       .report-section { padding: 16px; }
-      .bar-label { width: 120px; min-width: 90px; font-size: 11px; }
+      .bar-label { width: 130px; min-width: 100px; font-size: 11px; }
+      .report-controls { flex-wrap: wrap; }
+    }
+
+    /* ── Mobile portrait — up to 640px ──────────────────────────────────────── */
+    @media (max-width: 640px) {
+      /* Stats: single column on very narrow screens */
+      .stats-row { grid-template-columns: 1fr 1fr; gap: 8px; }
+      .stat-card { padding: 12px 14px; gap: 10px; }
+      .stat-icon { width: 34px; height: 34px; font-size: 15px; }
+      .stat-value { font-size: 20px; }
+
+      /* Hide lower-priority table columns to prevent overflow */
+      /* Column order: JRF# | Date | Name | Position | Problem | Recommendation | Assigned Staff | Status | Actions */
+      /* Hide: Position (4th), Recommendation (6th), Assigned Staff (7th) */
+      thead th:nth-child(4),
+      tbody td:nth-child(4),
+      thead th:nth-child(6),
+      tbody td:nth-child(6),
+      thead th:nth-child(7),
+      tbody td:nth-child(7) { display: none; }
+
+      /* Bar chart label narrower */
+      .bar-label { width: 100px; min-width: 80px; font-size: 10px; }
+    }
+
+    /* ── Extra-small — up to 400px ───────────────────────────────────────────── */
+    @media (max-width: 400px) {
+      /* Stats: stack into single column */
+      .stats-row { grid-template-columns: 1fr; }
+
+      /* Hide user pill on very small screens to save topbar space */
+      .topbar-user { display: none; }
+
+      /* Reduce theme label */
+      #theme-label { display: none; }
+
+      /* Tighter body */
+      .dash-body { padding: 10px 10px; gap: 10px; }
+
+      /* Tighter table cells */
+      thead th, tbody td { padding: 8px 8px; }
     }
   </style>
 </head>
@@ -576,22 +693,24 @@
   <div id="table-section">
     <div class="table-wrap">
       <div class="loading" id="loading">Loading tickets...</div>
-      <table id="ticket-table" style="display:none;">
-        <thead>
-          <tr>
-            <th class="sortable" onclick="sortTable('jrfNo', this)">IT JRF #<span class="sort-icon"></span></th>
-            <th class="sortable" onclick="sortTable('date', this)">Date<span class="sort-icon"></span></th>
-            <th>Name</th>
-            <th>Position</th>
-            <th>Problem</th>
-            <th>Recommendation</th>
-            <th>Assigned Staff</th>
-            <th class="sortable" onclick="sortTable('status', this)">Status<span class="sort-icon"></span></th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="ticket-body"></tbody>
-      </table>
+      <div class="table-scroll-wrapper">
+        <table id="ticket-table" style="display:none;">
+          <thead>
+            <tr>
+              <th class="sortable" onclick="sortTable('jrfNo', this)">IT JRF #<span class="sort-icon"></span></th>
+              <th class="sortable" onclick="sortTable('date', this)">Date<span class="sort-icon"></span></th>
+              <th>Name</th>
+              <th>Position</th>
+              <th>Problem</th>
+              <th>Recommendation</th>
+              <th>Assigned Staff</th>
+              <th class="sortable" onclick="sortTable('status', this)">Status<span class="sort-icon"></span></th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="ticket-body"></tbody>
+        </table>
+      </div>
       <div class="empty" id="empty" style="display:none;">No tickets found.</div>
     </div>
     <div class="pagination-bar" id="pagination-bar">
@@ -1128,8 +1247,8 @@
         '<td class="td-problem">' + esc(t.problem) + '</td>' +
         '<td>' + esc(t.recType) + '</td>' +
         '<td>' + esc(t.assignedStaff || '—') + '</td>' +
-        '<td>' + badgeHtml(t.status) + '</td>' +
-        '<td><div class="actions">' + editBtn + actionHtml + '</div></td>';
+        '<td class="status-cell">' + badgeHtml(t.status) + '</td>' +
+        '<td class="actions-cell"><div class="actions">' + editBtn + actionHtml + '</div></td>';
 
       tbody.appendChild(row);
     });

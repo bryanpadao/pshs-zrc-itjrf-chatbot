@@ -1888,8 +1888,8 @@ function showApprovalConfirmPage(token, action) {
       '<div class="action-box"><div class="label">You are about to</div><div class="act">' + safeAction + '</div></div>' +
       '<p style="font-size:13px;color:#444;margin-bottom:4px;">Click the button matching your intended action to confirm.</p>' +
       '<div class="btns">' +
-      '<a href="' + approveUrl + '" class="btn btn-approve">&#10003; Approve</a>' +
-      '<a href="' + rejectUrl  + '" class="btn btn-reject">&#10007; Reject</a>' +
+      '<a href="' + approveUrl + '" class="btn btn-approve confirm-btn">&#10003; Approve</a>' +
+      '<a href="' + rejectUrl  + '" class="btn btn-reject confirm-btn">&#10007; Reject</a>' +
       '</div>' +
       '<p class="note">Each link can only be used once. If you did not expect this email, please contact the IT Unit.</p>' +
       '<p class="logo">PSHS ZRC IT Unit</p>' +
@@ -1903,14 +1903,23 @@ function showApprovalConfirmPage(token, action) {
       '<span style="word-break:break-all;font-size:11px;color:#c0392b;" id="reject-url-text"></span>' +
       '</div>' +
       '<script>' +
-      'setTimeout(function(){' +
-      'var fb=document.getElementById("fallback-msg");' +
-      'if(fb){' +
+      // Set fallback URLs immediately on page load (before any click)
       'document.getElementById("approve-url-text").textContent="' + approveUrl + '";' +
       'document.getElementById("reject-url-text").textContent="' + rejectUrl + '";' +
-      'fb.style.display="block";' +
-      '}' +
-      '},3000);' +
+      // Show fallback ONLY if a button was clicked but navigation was blocked.
+      // Cancel the timer on beforeunload (navigation started successfully) so the
+      // fallback never flashes during slow-but-successful Apps Script page loads.
+      'var fallbackTimer=null;' +
+      'window.addEventListener("beforeunload",function(){' +
+      'if(fallbackTimer){clearTimeout(fallbackTimer);fallbackTimer=null;}' +
+      '});' +
+      'document.querySelectorAll(".confirm-btn").forEach(function(btn){' +
+      'btn.addEventListener("click",function(){' +
+      'fallbackTimer=setTimeout(function(){' +
+      'var fb=document.getElementById("fallback-msg");if(fb)fb.style.display="block";' +
+      '},8000);' +
+      '});' +
+      '});' +
       '<\/script>' +
       '</body></html>';
 
@@ -2865,20 +2874,27 @@ function generateFormPdf(authToken, jrfNo) {
   // form content row (39, Confirmed by User) and this footer.
   // getRange(row, col, numRows, numCols) is used instead of A1 notation —
   // numeric references are more reliable on copied Template sheets.
-  const footerRange = temp.getRange(41, 2, 1, 16); // B41:Q41
-  footerRange.merge();
-  footerRange.setValue(
-    'This is a system-generated document processed through the PSHS-ZRC IT Help Desk. ' +
-    'Supervisor and Campus Director approvals were obtained via one-time digital approval ' +
-    'links sent to their official school email addresses and are recorded in the system.'
-  );
-  footerRange.setFontSize(7);
-  footerRange.setFontColor('#888888');
-  footerRange.setFontStyle('italic');
-  footerRange.setHorizontalAlignment('center');
-  footerRange.setVerticalAlignment('middle');
-  footerRange.setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
-  temp.setRowHeight(41, 30);
+  try {
+    const footerRange = temp.getRange(41, 2, 1, 16); // B41:Q41
+    footerRange.merge();
+    footerRange.setValue(
+      'This is a system-generated document processed through the PSHS-ZRC IT Help Desk. ' +
+      'Supervisor and Campus Director approvals were obtained via one-time digital approval ' +
+      'links sent to their official school email addresses and are recorded in the system.'
+    );
+    footerRange.setFontSize(7);
+    footerRange.setFontColor('#888888');
+    footerRange.setFontStyle('italic');
+    footerRange.setHorizontalAlignment('center');
+    footerRange.setVerticalAlignment('middle');
+    footerRange.setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
+    temp.setRowHeight(41, 30);
+  } catch (e) {
+    console.error('generateFormPdf: footer write failed', e);
+    // Non-fatal — continue with PDF export even if footer fails
+  }
+
+  SpreadsheetApp.flush(); // ensure all writes (including footer) are committed before export
 
   // Export as A4 PDF
   const exportUrl =
