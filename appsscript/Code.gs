@@ -1532,10 +1532,23 @@ function submitFormTicket(params) {
 function isGibberish(text) {
   if (!text) return false;
   const trimmed = text.trim();
-  if (trimmed.length < 4) return false; // too short to judge — could be a dept code
 
-  const cleaned = trimmed.toLowerCase().replace(/[^a-z]/g, '');
-  if (cleaned.length < 4) return false;
+  // Bisaya/Filipino short-word whitelist — common particles and compound IT phrases that
+  // look consonant-heavy or vowel-sparse but are perfectly valid input.
+  const BISAYA_WHITELIST = [
+    'ng','nang','mga','ang','naa','wla','dli','dili','wala',
+    'ngtanggap','nagprint','nagopen','nagload','nagcrash',
+    'nag-on','nag-off','nagsend','nagconnect','nagfreeze',
+    'nagrestart','dilimobukas','diliga','walanet',
+    'walasignal','walainternet'
+  ];
+  const lower = trimmed.toLowerCase();
+  if (BISAYA_WHITELIST.some(function(w) { return lower.includes(w); })) return false;
+
+  if (trimmed.length < 8) return false; // too short to judge — could be a dept code or short word
+
+  const cleaned = lower.replace(/[^a-z]/g, '');
+  if (cleaned.length < 8) return false;
 
   // 1. Whole string (with up to 3 trailing chars) is one repeating 2–4 char n-gram
   //    e.g. "asdasdasd", "vcvcvcvc", "sdfsdf"
@@ -1548,15 +1561,17 @@ function isGibberish(text) {
     if (uniqueRatio < 0.40) return true;
   }
 
-  // 3. Very low vowel ratio for strings longer than 6 chars (threshold: < 10%)
-  //    e.g. "qwrtpsdfg" — 0 vowels
-  if (cleaned.length > 6) {
+  // 3. Very low vowel ratio for strings longer than 12 chars (threshold: < 7%)
+  //    Raised from > 6 / < 10% to avoid false positives on short Bisaya/Filipino words.
+  //    e.g. "qwrtpsdfghjklm" — 0 vowels
+  if (cleaned.length > 12) {
     const vowelRatio = (cleaned.match(/[aeiou]/g) || []).length / cleaned.length;
-    if (vowelRatio < 0.10) return true;
+    if (vowelRatio < 0.07) return true;
   }
 
-  // 4. Consecutive consonant run of 6 or more (e.g. "sdfjklqw")
-  if (/[^aeiou]{6,}/.test(cleaned)) return true;
+  // 4. Consecutive consonant run of 8 or more (raised from 6 to reduce false positives
+  //    on Bisaya words like "nagprint", "nagcrash" which have short consonant clusters)
+  if (/[^aeiou]{8,}/.test(cleaned)) return true;
 
   return false;
 }

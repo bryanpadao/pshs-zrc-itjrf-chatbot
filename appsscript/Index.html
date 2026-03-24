@@ -1538,7 +1538,7 @@
           '<div>' +
             '<label class="form-field-label">Description <span style="color:#c00">*</span></label>' +
             '<textarea class="form-textarea" id="form-description" placeholder="' + escHtml(cfg.placeholder) + '" oninput="updateWordCount()"></textarea>' +
-            '<div class="word-count insufficient" id="word-count-display">0 words — please add more detail</div>' +
+            '<div class="word-count insufficient" id="word-count-display">0 words — please add more detail (minimum 8)</div>' +
           '</div>' +
           '<div class="form-error" id="form-error"></div>' +
           '<div class="form-actions">' +
@@ -1587,12 +1587,12 @@
       const countEl  = document.getElementById('word-count-display');
       const words    = (textarea.value.trim().match(/\S+/g) || []).length;
       const ok       = words >= 8;
-      countEl.textContent = words + (ok ? ' words ✓' : ' words — please add more detail');
+      countEl.textContent = words + (ok ? ' words ✓' : ' words — please add more detail (minimum 8)');
       countEl.className   = 'word-count ' + (ok ? 'sufficient' : 'insufficient');
       updateFormSubmitState();
     }
 
-    /* Enables the submit button only when word count >= 15 AND CCTV checkbox is checked (if applicable) */
+    /* Enables the submit button only when word count >= 8 AND CCTV checkbox is checked (if applicable) */
     function updateFormSubmitState() {
       const textarea  = document.getElementById('form-description');
       const submitBtn = document.getElementById('form-submit-btn');
