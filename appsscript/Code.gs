@@ -1841,7 +1841,7 @@ function handleApproval(token, action) {
 
       return approvalHtmlPage(
         'Thank You for Approving',
-        'Your approval for ticket <strong>' + jrfNo + '</strong> has been recorded. The IT unit has been notified and will proceed accordingly.'
+        'Your approval for ticket ' + jrfNo + ' has been recorded. The IT unit has been notified and will proceed accordingly.'
       );
     } else {
       tSheet.getRange(tRowIdx, 8).setValue('Rejected');
@@ -1900,7 +1900,7 @@ function handleApproval(token, action) {
 
       return approvalHtmlPage(
         'Request Rejected',
-        'Thank you for your response. Ticket <strong>' + htmlEncode(jrfNo) + '</strong> has been marked as rejected and the IT unit has been informed.'
+        'Thank you for your response. Ticket ' + jrfNo + ' has been marked as rejected and the IT unit has been informed.'
       );
     }
   } catch (err) {
