@@ -107,23 +107,50 @@ function checkGlobalRateLimit() {
 
 
 /**
+ * Prevents formula injection in Google Sheets: prepends a single-quote if the
+ * value starts with a formula-triggering character (=, +, -, @).
+ * Only applied to user-supplied string columns in appendRow/setValue calls.
+ */
+function sanitizeCell(value) {
+  if (typeof value !== 'string') return value;
+  if (/^[=+\-@]/.test(value.trim())) return "'" + value;
+  return value;
+}
+
+/**
+ * HTML-encodes a value for safe interpolation into HTML strings.
+ * Prevents XSS when sheet values are embedded in HtmlService output.
+ */
+function htmlEncode(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
  * Internal auth guard for dashboard functions.
  * Validates that the currently signed-in Google account is an authorized IT staff member.
  * Throws 'Unauthorized' if not in the IT_STAFF_EMAIL list.
  */
-function _requireDashboardAuth(token) {
-  try {
-    const email = Session.getActiveUser().getEmail();
-    if (!email) throw new Error('Unauthorized: not signed in.');
-    const allowed = (PropertiesService.getScriptProperties().getProperty('IT_STAFF_EMAIL') || '')
-      .split(',').map(function(e) { return e.trim().toLowerCase(); }).filter(Boolean);
-    if (!allowed.includes(email.toLowerCase().trim())) {
-      throw new Error('Unauthorized: ' + email + ' is not an authorized IT staff member.');
-    }
-  } catch (err) {
-    if (err.message && err.message.startsWith('Unauthorized')) throw err;
-    throw new Error('Session expired. Please log in again.');
-  }
+/**
+ * Validates that the current Google session belongs to an IT staff member.
+ * All dashboard server functions call this guard. Throws on unauthorized.
+ * The token parameter is accepted but ignored — kept so call sites that still
+ * pass a token argument do not need to be changed (JS ignores extra args).
+ * @return {string} The authenticated staff email.
+ */
+function _requireDashboardAuth() {
+  const email = Session.getActiveUser().getEmail();
+  if (!email) throw 'Not authenticated. Please sign in with your Google account.';
+  const allowed = (PropertiesService.getScriptProperties()
+    .getProperty('IT_STAFF_EMAIL') || '')
+    .split(',').map(function(e) { return e.trim().toLowerCase(); });
+  if (!allowed.includes(email.toLowerCase()))
+    throw 'Unauthorized: ' + email + ' is not in the IT staff list.';
+  return email;
 }
 
 // =============================================================================
@@ -132,9 +159,17 @@ function _requireDashboardAuth(token) {
 
 function doGet(e) {
   // Handle email approval links: ?token=XXX&action=approve|reject
-  const token  = e && e.parameter && e.parameter.token;
-  const action = e && e.parameter && e.parameter.action;
-  if (token && action) return handleApproval(token, action);
+  // Two-step flow prevents email scanner bots (Google Safe Browsing, SafeLinks) from
+  // silently approving/rejecting tickets by pre-fetching the link on behalf of the
+  // approver. The first visit shows a confirmation page; state only changes on
+  // ?confirm=1 (which the approver must explicitly click).
+  const token   = e && e.parameter && e.parameter.token;
+  const action  = e && e.parameter && e.parameter.action;
+  const confirm = e && e.parameter && e.parameter.confirm;
+  if (token && action) {
+    if (confirm === '1') return handleApproval(token, action);
+    return showApprovalConfirmPage(token, action);
+  }
 
   const page = (e && e.parameter && e.parameter.page) || '';
   if (page === 'dashboard') {
@@ -1264,25 +1299,27 @@ function saveTicket(data) {
         'yyyy-MM-dd'
       );
 
+      // sanitizeCell() is applied to all user-supplied string columns to prevent
+      // formula injection (values starting with =, +, -, @ being evaluated by Sheets).
       sheet.appendRow([
-        jrfStr,
-        today,
-        data.name           || '',
-        data.position       || '',
-        data.supervisor     || '',
-        data.description    || '',
-        data.recType        || '',  // Recommendation Type — pre-filled for known types; otherwise set by IT staff
-        'Pending Supervisor Approval', // default Status
-        '',                           // Assigned Staff — filled by IT staff later
-        '',                           // Date Completed — filled by IT staff later
-        '',                           // Assessment — filled by IT staff later
-        '',                           // Action Taken — filled by IT staff later
-        '',                           // Task Result — filled by IT staff later
-        '',                           // Target Date — filled by IT staff later
-        '',                           // Others Description — filled by IT staff later
-        '',                           // Service Location — filled by IT staff later
-        data.rawDescription || '',    // col Q — raw description before formal paraphrase
-        data.userEmail      || '',    // col R — requester Google account email
+        jrfStr,                                           // col A — system-generated, no sanitize
+        today,                                            // col B — system-generated, no sanitize
+        sanitizeCell(data.name        || ''),             // col C — user-supplied
+        sanitizeCell(data.position    || ''),             // col D — user-supplied
+        sanitizeCell(data.supervisor  || ''),             // col E — user-supplied
+        sanitizeCell(data.description || ''),             // col F — user-supplied (paraphrased)
+        data.recType        || '',  // col G — Recommendation Type: pre-filled for known types; set by IT staff otherwise
+        'Pending Supervisor Approval',                    // col H — system-controlled status
+        '',                                               // col I — Assigned Staff: filled by IT staff
+        '',                                               // col J — Date Completed: filled by IT staff
+        '',                                               // col K — Assessment: filled by IT staff
+        '',                                               // col L — Action Taken: filled by IT staff
+        '',                                               // col M — Task Result: system-controlled
+        '',                                               // col N — Target Date: filled by IT staff
+        '',                                               // col O — Others Description: filled by IT staff
+        '',                                               // col P — Service Location: filled by IT staff
+        sanitizeCell(data.rawDescription || ''),          // col Q — raw description before formal paraphrase
+        sanitizeCell(data.userEmail      || ''),          // col R — requester Google account email
       ]);
     } finally {
       jrfLock.releaseLock();
@@ -1621,6 +1658,121 @@ function submitAssessment(token, jrfNo, assignedStaff, recommendation, assessmen
  * Handles email approval link clicks (?token=XXX&action=approve|reject).
  * Returns an HTML confirmation page.
  */
+/**
+ * Shows a confirmation page before performing an approval or rejection.
+ * This is the first step of the two-step approval flow — it validates the token
+ * and ticket without changing any state, then presents two explicit action links
+ * so that email pre-fetch bots cannot trigger the state change automatically.
+ *
+ * The approver only causes a state change by clicking one of the two links on
+ * this page, which adds ?confirm=1 to the URL and routes to handleApproval().
+ */
+function showApprovalConfirmPage(token, action) {
+  try {
+    const webAppUrl = PropertiesService.getScriptProperties().getProperty('WEBAPP_URL') || '';
+
+    // --- Validate token ---
+    const ss     = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const aSheet = ss.getSheetByName(APPROVALS_SHEET_NAME);
+    if (!aSheet) return approvalHtmlPage('Error', 'Approval system not initialised.');
+
+    const data = aSheet.getDataRange().getValues();
+    let approvalRow = null;
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0] === token) { approvalRow = data[i]; break; }
+    }
+    if (!approvalRow) {
+      return approvalHtmlPage('Invalid Link', 'This approval link is invalid or has expired. Please contact the IT Unit if you believe this is an error.');
+    }
+
+    // Check expiry (col E = index 4 = Created timestamp)
+    if (approvalRow[4]) {
+      const ageDays = (Date.now() - new Date(approvalRow[4]).getTime()) / (1000 * 60 * 60 * 24);
+      if (ageDays > APPROVAL_TOKEN_TTL_DAYS) {
+        return approvalHtmlPage(
+          'Link Expired',
+          'This approval link has expired (links are valid for ' + APPROVAL_TOKEN_TTL_DAYS + ' days). ' +
+          'Please contact the IT Unit to resend the request if still needed.'
+        );
+      }
+    }
+
+    // Check already used (col D = index 3)
+    if (approvalRow[3]) {
+      const wasApproved = String(approvalRow[3]).startsWith('approve');
+      return approvalHtmlPage(
+        wasApproved ? 'Already Approved' : 'Already Rejected',
+        'You have already ' + (wasApproved ? 'approved' : 'rejected') + ' this request. No further action is needed.'
+      );
+    }
+
+    // --- Look up ticket (read-only; no state change here) ---
+    const jrfNo  = String(approvalRow[1]);
+    const tSheet = ss.getSheetByName(ITJRF_SHEET_NAME);
+    if (!tSheet) return approvalHtmlPage('Error', 'Tickets sheet not found.');
+    const tData  = tSheet.getDataRange().getValues();
+    let ticketRow = null;
+    for (let i = 1; i < tData.length; i++) {
+      if (String(tData[i][0]) === jrfNo) { ticketRow = tData[i]; break; }
+    }
+    if (!ticketRow) return approvalHtmlPage('Error', 'Ticket not found: ' + htmlEncode(jrfNo));
+
+    // --- Build confirmation page — all sheet values are HTML-encoded ---
+    const safeJrfNo   = htmlEncode(jrfNo);
+    const safeName    = htmlEncode(ticketRow[2] || '');                       // col C
+    const safeProb    = htmlEncode((ticketRow[5] || '').substring(0, 100));   // col F, first 100 chars
+    const safeAction  = action === 'approve' ? 'Approve' : 'Reject';
+    const encodedTok  = encodeURIComponent(token);
+
+    const approveUrl  = webAppUrl + '?token=' + encodedTok + '&action=approve&confirm=1';
+    const rejectUrl   = webAppUrl + '?token=' + encodedTok + '&action=reject&confirm=1';
+
+    const html =
+      '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+      '<title>Confirm ' + safeAction + ' — PSHS ZRC IT</title>' +
+      '<style>' +
+      '*{box-sizing:border-box;margin:0;padding:0}' +
+      'body{font-family:Arial,sans-serif;background:#f0f2f5;display:flex;align-items:center;justify-content:center;min-height:100vh;}' +
+      '.box{background:#fff;padding:36px 44px;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,.1);max-width:480px;width:100%;}' +
+      '.hdr{background:#1a3c6e;color:#fff;padding:18px 24px;border-radius:8px 8px 0 0;margin:-36px -44px 28px;}' +
+      '.hdr h2{font-size:17px;font-weight:600;margin:0;}' +
+      '.hdr p{font-size:11px;color:#a8bcd8;margin:4px 0 0;}' +
+      '.field{margin-bottom:12px;}' +
+      '.label{font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px;}' +
+      '.value{font-size:13px;color:#1a1a1a;line-height:1.5;}' +
+      '.action-box{background:#f7f9fc;border:1px solid #dce4ef;border-radius:6px;padding:14px 16px;margin:20px 0;text-align:center;}' +
+      '.action-box .label{margin-bottom:6px;}' +
+      '.action-box .act{font-size:15px;font-weight:700;color:#1a3c6e;}' +
+      '.btns{display:flex;gap:12px;margin-top:24px;}' +
+      '.btn{flex:1;display:inline-block;text-align:center;text-decoration:none;padding:12px 10px;border-radius:6px;font-size:14px;font-weight:600;}' +
+      '.btn-approve{background:#2e7d32;color:#ffffff;}' +
+      '.btn-reject{background:#c62828;color:#ffffff;}' +
+      '.note{font-size:12px;color:#7a8a9a;margin-top:18px;line-height:1.5;text-align:center;}' +
+      '.logo{font-size:11px;color:#aaa;margin-top:18px;text-align:center;}' +
+      '</style></head><body><div class="box">' +
+      '<div class="hdr"><h2>IT Job Request Approval</h2><p>PSHS Zamboanga Regional Campus &middot; IT Unit</p></div>' +
+      '<div class="field"><div class="label">IT JRF #</div><div class="value">' + safeJrfNo + '</div></div>' +
+      '<div class="field"><div class="label">Requester</div><div class="value">' + safeName + '</div></div>' +
+      '<div class="field"><div class="label">Problem (summary)</div><div class="value">' + safeProb + '</div></div>' +
+      '<div class="action-box"><div class="label">You are about to</div><div class="act">' + safeAction + '</div></div>' +
+      '<p style="font-size:13px;color:#444;margin-bottom:4px;">Click the button matching your intended action to confirm.</p>' +
+      '<div class="btns">' +
+      '<a href="' + approveUrl + '" class="btn btn-approve">&#10003; Approve</a>' +
+      '<a href="' + rejectUrl  + '" class="btn btn-reject">&#10007; Reject</a>' +
+      '</div>' +
+      '<p class="note">Each link can only be used once. If you did not expect this email, please contact the IT Unit.</p>' +
+      '<p class="logo">PSHS ZRC IT Unit</p>' +
+      '</div></body></html>';
+
+    return HtmlService.createHtmlOutput(html)
+      .setTitle('Confirm ' + safeAction + ' — PSHS ZRC IT')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  } catch (err) {
+    Logger.log('showApprovalConfirmPage error: ' + err);
+    return approvalHtmlPage('Error', 'An unexpected error occurred. Please try again.');
+  }
+}
+
 function handleApproval(token, action) {
   try {
     const ss     = SpreadsheetApp.openById(SPREADSHEET_ID);
@@ -1693,9 +1845,62 @@ function handleApproval(token, action) {
       );
     } else {
       tSheet.getRange(tRowIdx, 8).setValue('Rejected');
+
+      // Notify the requester that their ticket was not approved.
+      // ticketRow index reference (0-based): [2]=Name, [5]=Problem, [17]=Requester Email
+      // type is 'supervisor' or 'director' — used to name the approval stage.
+      const requesterEmail = ticketRow[17];
+      if (requesterEmail && String(requesterEmail).trim()) {
+        try {
+          const stageName   = type === 'supervisor' ? 'supervisor' : 'Campus Director';
+          const safeJrfNoR  = htmlEncode(jrfNo);
+          const safeNameR   = htmlEncode(ticketRow[2] || '');
+          const safeProbR   = htmlEncode((ticketRow[5] || '').substring(0, 150));
+          const rejSubject  = '[PSHS ZRC] IT Job Request IT JRF #' + jrfNo + ' \u2014 Not Approved';
+          const rejHtml =
+            '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">' +
+            '<div style="background:#1a3c6e;padding:20px 28px;border-radius:6px 6px 0 0;">' +
+            '<div style="font-size:16px;font-weight:600;color:#ffffff;">IT Job Request — Not Approved</div>' +
+            '<div style="font-size:11px;color:#a8bcd8;margin-top:4px;">PSHS Zamboanga Regional Campus &middot; IT Unit</div>' +
+            '</div>' +
+            '<div style="background:#ffffff;padding:24px 28px;border:1px solid #dce4ef;border-top:none;">' +
+            '<p style="margin:0 0 16px;">Dear ' + safeNameR + ',</p>' +
+            '<p style="margin:0 0 16px;">We regret to inform you that your IT Job Request was <strong>not approved</strong> at the <strong>' + htmlEncode(stageName) + '</strong> stage.</p>' +
+            '<table style="width:100%;border-collapse:collapse;background:#f7f9fc;border:1px solid #dce4ef;border-radius:4px;margin-bottom:20px;">' +
+            '<tr style="border-bottom:1px solid #dce4ef;">' +
+            '<td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;width:140px;">IT JRF #</td>' +
+            '<td style="padding:9px 14px;font-size:13px;">' + safeJrfNoR + '</td>' +
+            '</tr>' +
+            '<tr>' +
+            '<td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;vertical-align:top;">Problem</td>' +
+            '<td style="padding:9px 14px;font-size:13px;line-height:1.5;">' + safeProbR + '</td>' +
+            '</tr>' +
+            '</table>' +
+            '<p style="font-size:13px;color:#444;margin:0 0 14px;">If you have questions or believe this was in error, please contact the IT Unit directly.</p>' +
+            '</div>' +
+            '<div style="background:#f0f4fa;border:1px solid #dce4ef;border-top:none;border-radius:0 0 6px 6px;padding:12px 28px;font-size:11px;color:#8a9aaa;">' +
+            'PSHS ZRC IT Unit &nbsp;&#183;&nbsp; This is an automated message.' +
+            '</div></div>';
+          const rejPlain =
+            'Dear ' + (ticketRow[2] || '') + ',\n\n' +
+            'Your IT Job Request (IT JRF #' + jrfNo + ') was not approved at the ' + stageName + ' stage.\n\n' +
+            'Problem: ' + (ticketRow[5] || '').substring(0, 150) + '\n\n' +
+            'If you have questions or believe this was in error, please contact the IT Unit directly.\n\n' +
+            'PSHS ZRC IT Unit';
+          GmailApp.sendEmail(
+            String(requesterEmail).trim(),
+            rejSubject,
+            rejPlain,
+            { htmlBody: rejHtml, name: 'PSHS-ZRC IT Unit' }
+          );
+        } catch (mailErr) {
+          Logger.log('handleApproval: failed to send rejection notification to requester: ' + mailErr);
+        }
+      }
+
       return approvalHtmlPage(
         'Request Rejected',
-        'Thank you for your response. Ticket <strong>' + jrfNo + '</strong> has been marked as rejected and the IT unit has been informed.'
+        'Thank you for your response. Ticket <strong>' + htmlEncode(jrfNo) + '</strong> has been marked as rejected and the IT unit has been informed.'
       );
     }
   } catch (err) {
@@ -1748,77 +1953,90 @@ function sendApprovalEmail(type, jrfNo, ticket) {
     console.error('sendApprovalEmail: dept lookup failed', e);
   }
 
-  const approveUrl  = webAppUrl + '?token=' + token + '&action=approve';
-  const rejectUrl   = webAppUrl + '?token=' + token + '&action=reject';
+  // Approval links go to the confirmation page (no &confirm=1 here).
+  // The approver sees a summary page first and must click a second time to commit.
+  const encodedToken = encodeURIComponent(token);
+  const approveUrl  = webAppUrl + '?token=' + encodedToken + '&action=approve';
+  const rejectUrl   = webAppUrl + '?token=' + encodedToken + '&action=reject';
   const subject     = '[PSHS ZRC] IT Job Request #' + jrfNo + ' — Awaiting your approval';
 
-  const htmlBody = `<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">
+  // HTML-encode all ticket field values before interpolating into the email body.
+  const safeJrfNo         = htmlEncode(jrfNo);
+  const safeDate          = htmlEncode(ticket.date         || '');
+  const safeName          = htmlEncode(ticket.name         || '');
+  const safePosition      = htmlEncode(ticket.position     || '');
+  const safeDepartment    = htmlEncode(departmentFull);
+  const safeProblem       = htmlEncode(ticket.problem      || '');
+  const safeRecipientName = htmlEncode(recipientName);
 
-  <div style="background:#1a3c6e;padding:20px 28px;border-radius:6px 6px 0 0;">
-    <div style="font-size:16px;font-weight:600;color:#ffffff;">IT Job Request — Approval Required</div>
-    <div style="font-size:11px;color:#a8bcd8;margin-top:4px;">PSHS Zamboanga Regional Campus · IT Unit</div>
-  </div>
+  const htmlBody =
+    '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">' +
 
-  <div style="background:#ffffff;padding:24px 28px;border:1px solid #dce4ef;border-top:none;">
+    '<div style="background:#1a3c6e;padding:20px 28px;border-radius:6px 6px 0 0;">' +
+    '<div style="font-size:16px;font-weight:600;color:#ffffff;">IT Job Request — Approval Required</div>' +
+    '<div style="font-size:11px;color:#a8bcd8;margin-top:4px;">PSHS Zamboanga Regional Campus &middot; IT Unit</div>' +
+    '</div>' +
 
-    <p style="margin:0 0 14px;">Dear ${recipientName},</p>
-    <p style="margin:0 0 20px;">A staff member under your supervision has submitted an IT Job Request Form that requires your approval.</p>
+    '<div style="background:#ffffff;padding:24px 28px;border:1px solid #dce4ef;border-top:none;">' +
 
-    <table style="width:100%;border-collapse:collapse;background:#f7f9fc;border:1px solid #dce4ef;border-radius:4px;margin-bottom:20px;">
-      <tr style="border-bottom:1px solid #dce4ef;">
-        <td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;width:140px;">IT JRF #</td>
-        <td style="padding:9px 14px;font-size:13px;">${jrfNo}</td>
-      </tr>
-      <tr style="border-bottom:1px solid #dce4ef;">
-        <td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;">Date Submitted</td>
-        <td style="padding:9px 14px;font-size:13px;">${ticket.date || ''}</td>
-      </tr>
-      <tr style="border-bottom:1px solid #dce4ef;">
-        <td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;">Name</td>
-        <td style="padding:9px 14px;font-size:13px;">${ticket.name || ''}</td>
-      </tr>
-      <tr style="border-bottom:1px solid #dce4ef;">
-        <td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;">Position</td>
-        <td style="padding:9px 14px;font-size:13px;">${ticket.position || ''}</td>
-      </tr>
-      <tr>
-        <td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;">Department</td>
-        <td style="padding:9px 14px;font-size:13px;">${departmentFull}</td>
-      </tr>
-    </table>
+    '<p style="margin:0 0 14px;">Dear ' + safeRecipientName + ',</p>' +
+    '<p style="margin:0 0 20px;">A staff member under your supervision has submitted an IT Job Request Form that requires your approval.</p>' +
 
-    <div style="background:#f7f9fc;border:1px solid #dce4ef;border-radius:4px;padding:14px 16px;margin-bottom:20px;">
-      <div style="font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;margin-bottom:8px;">Problem Description</div>
-      <div style="font-size:13px;line-height:1.6;">${ticket.problem || ''}</div>
-    </div>
+    '<table style="width:100%;border-collapse:collapse;background:#f7f9fc;border:1px solid #dce4ef;border-radius:4px;margin-bottom:20px;">' +
+    '<tr style="border-bottom:1px solid #dce4ef;">' +
+    '<td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;width:140px;">IT JRF #</td>' +
+    '<td style="padding:9px 14px;font-size:13px;">' + safeJrfNo + '</td>' +
+    '</tr>' +
+    '<tr style="border-bottom:1px solid #dce4ef;">' +
+    '<td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;">Date Submitted</td>' +
+    '<td style="padding:9px 14px;font-size:13px;">' + safeDate + '</td>' +
+    '</tr>' +
+    '<tr style="border-bottom:1px solid #dce4ef;">' +
+    '<td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;">Name</td>' +
+    '<td style="padding:9px 14px;font-size:13px;">' + safeName + '</td>' +
+    '</tr>' +
+    '<tr style="border-bottom:1px solid #dce4ef;">' +
+    '<td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;">Position</td>' +
+    '<td style="padding:9px 14px;font-size:13px;">' + safePosition + '</td>' +
+    '</tr>' +
+    '<tr>' +
+    '<td style="padding:9px 14px;font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;">Department</td>' +
+    '<td style="padding:9px 14px;font-size:13px;">' + safeDepartment + '</td>' +
+    '</tr>' +
+    '</table>' +
 
-    <hr style="border:none;border-top:1px solid #e0e6ef;margin:20px 0;">
+    '<div style="background:#f7f9fc;border:1px solid #dce4ef;border-radius:4px;padding:14px 16px;margin-bottom:20px;">' +
+    '<div style="font-size:11px;font-weight:600;color:#5a6a80;text-transform:uppercase;letter-spacing:0.4px;margin-bottom:8px;">Problem Description</div>' +
+    '<div style="font-size:13px;line-height:1.6;">' + safeProblem + '</div>' +
+    '</div>' +
 
-    <p style="margin:0 0 14px;font-size:13px;">Please click one of the buttons below to respond:</p>
+    '<hr style="border:none;border-top:1px solid #e0e6ef;margin:20px 0;">' +
 
-    <table style="border-collapse:collapse;margin-bottom:20px;">
-      <tr>
-        <td style="padding-right:12px;">
-          <a href="${approveUrl}" style="display:inline-block;background:#1a7a4a;color:#ffffff;text-decoration:none;padding:11px 28px;border-radius:5px;font-size:13px;font-weight:600;">&#10003; Approve</a>
-        </td>
-        <td>
-          <a href="${rejectUrl}" style="display:inline-block;background:#c0392b;color:#ffffff;text-decoration:none;padding:11px 28px;border-radius:5px;font-size:13px;font-weight:600;">&#10007; Reject</a>
-        </td>
-      </tr>
-    </table>
+    '<p style="margin:0 0 14px;font-size:13px;">Please click one of the buttons below to respond:</p>' +
 
-    <p style="font-size:12px;color:#7a8a9a;line-height:1.5;margin:0;">
-      Each link can only be used once and expires after 7 days.<br>
-      If you did not expect this email, please contact the IT Unit.
-    </p>
+    '<table style="border-collapse:collapse;margin-bottom:20px;">' +
+    '<tr>' +
+    '<td style="padding-right:12px;">' +
+    '<a href="' + approveUrl + '" style="display:inline-block;background:#1a7a4a;color:#ffffff;text-decoration:none;padding:11px 28px;border-radius:5px;font-size:13px;font-weight:600;">&#10003; Approve</a>' +
+    '</td>' +
+    '<td>' +
+    '<a href="' + rejectUrl + '" style="display:inline-block;background:#c0392b;color:#ffffff;text-decoration:none;padding:11px 28px;border-radius:5px;font-size:13px;font-weight:600;">&#10007; Reject</a>' +
+    '</td>' +
+    '</tr>' +
+    '</table>' +
 
-  </div>
+    '<p style="font-size:12px;color:#7a8a9a;line-height:1.5;margin:0;">' +
+    'Each link can only be used once and expires after 7 days.<br>' +
+    'If you did not expect this email, please contact the IT Unit.' +
+    '</p>' +
 
-  <div style="background:#f0f4fa;border:1px solid #dce4ef;border-top:none;border-radius:0 0 6px 6px;padding:12px 28px;font-size:11px;color:#8a9aaa;">
-    PSHS ZRC IT Unit &nbsp;&#183;&nbsp; This is an automated message.
-  </div>
+    '</div>' +
 
-</div>`;
+    '<div style="background:#f0f4fa;border:1px solid #dce4ef;border-top:none;border-radius:0 0 6px 6px;padding:12px 28px;font-size:11px;color:#8a9aaa;">' +
+    'PSHS ZRC IT Unit &nbsp;&#183;&nbsp; This is an automated message.' +
+    '</div>' +
+
+    '</div>';
 
   const plainBody =
     'Dear ' + recipientName + ',\n\n' +
@@ -2207,17 +2425,21 @@ function lookupEmployee(name) {
  * Returns a simple styled HTML page for approval responses.
  */
 function approvalHtmlPage(title, message) {
+  // htmlEncode() applied defensively: title and message can contain jrfNo or
+  // other sheet-derived values that must not be rendered as raw HTML.
+  const safeTitle   = htmlEncode(title);
+  const safeMessage = htmlEncode(message);
   return HtmlService.createHtmlOutput(
     '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
-    '<title>' + title + ' — PSHS ZRC IT</title>' +
+    '<title>' + safeTitle + ' — PSHS ZRC IT</title>' +
     '<style>*{box-sizing:border-box;margin:0;padding:0}' +
     'body{font-family:Arial,sans-serif;background:#f0f2f5;display:flex;align-items:center;justify-content:center;min-height:100vh;}' +
     '.box{background:#fff;padding:40px 48px;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,.1);text-align:center;max-width:440px;}' +
     'h2{color:#1a3c6e;font-size:20px;margin-bottom:14px;}p{color:#555;font-size:14px;line-height:1.6;}' +
     '.logo{font-size:11px;color:#aaa;margin-top:22px;}</style></head>' +
-    '<body><div class="box"><h2>' + title + '</h2><p>' + message + '</p>' +
+    '<body><div class="box"><h2>' + safeTitle + '</h2><p>' + safeMessage + '</p>' +
     '<p class="logo">PSHS ZRC IT Unit</p></div></body></html>'
-  ).setTitle(title + ' — PSHS ZRC IT');
+  ).setTitle(safeTitle + ' — PSHS ZRC IT');
 }
 
 /**
