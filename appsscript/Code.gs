@@ -229,7 +229,11 @@ function processChat(params) {
   // Cache key namespaces: chat_session_ | rate_limit_submissions | rate_user_ | dash_session_
   // No prefix overlap between namespaces prevents cross-key collision.
   if (!currentId || !/^[0-9a-f-]{36}$/i.test(currentId)) {
-    return { reply: 'Invalid session. Please refresh the page.', submitted: false };
+    console.error('processChat: invalid sessionId rejected:', currentId);
+    return {
+      reply: 'Your session has expired. Please click "Start a New Conversation" to continue.',
+      submitted: false
+    };
   }
 
   let session = {};

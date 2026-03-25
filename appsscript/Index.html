@@ -1015,11 +1015,27 @@
     const loadingState = document.getElementById('loading-state');
     const identityBar  = document.getElementById('identity-bar');
 
-    let sessionId       = ''; // server-side session key
+    /* Generates a UUID v4 string for use as a server-side session key.
+       Uses crypto.randomUUID() when available (all modern browsers); falls back
+       to a Math.random()-based implementation for older environments. */
+    function generateSessionId() {
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID(); // standard UUID v4, always lowercase with hyphens
+      }
+      // Fallback for older browsers
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+    }
+
+    let sessionId       = generateSessionId(); // server-side session key — generated once on page load
     let currentUser     = null; // identity from getUserIdentity() — set on load
     let currentFormType = null; // 'publication' | 'cctv' | 'technical' | 'it_issue' — set when form is open
     let currentChatKey  = null; // 'it_issue' | 'question' — tracks active chat flow to prevent duplicate intros
     let savedChatKey    = null; // saved chat key while a form panel is open (restored on hideFormPanel)
+    let lastIdentityState = null; // 'ok' | 'error' — tracks previous identity resolution outcome for Fix 4
 
     // Per-type config for the inline form panel
     const FORM_CONFIG = {
@@ -1238,7 +1254,7 @@
 
     /* Resets the chat to the initial state (called by "Start a New Conversation") */
     function resetChat() {
-      sessionId       = '';
+      sessionId       = generateSessionId(); // always generate a fresh session — never send empty string
       currentFormType = null;
       currentChatKey  = null;
       savedChatKey    = null;
@@ -1283,6 +1299,7 @@
       loadingState.style.display = 'none';
 
       if (identity.error === 'not_signed_in') {
+        lastIdentityState = 'error';
         showFullScreenMessage(
           'Please sign in with your PSHS ZRC Google account to use this chatbot.',
           'Sign in with Google',
@@ -1292,6 +1309,7 @@
       }
 
       if (identity.error === 'wrong_domain') {
+        lastIdentityState = 'error';
         showFullScreenMessage(
           'This chatbot is only for PSHS ZRC staff. Please sign in with your @' + identity.domain + ' school account.',
           'Sign in with a different account',
@@ -1301,6 +1319,7 @@
       }
 
       if (identity.error === 'not_in_employees') {
+        lastIdentityState = 'error';
         showFullScreenMessage(
           'Access denied. Your account (' + (identity.email || '') + ') is not registered in the PSHS ZRC employee records. ' +
           'Contact the IT unit to have your record added.',
@@ -1310,7 +1329,16 @@
         return;
       }
 
-      // Success — populate identity bar and show main content
+      // Success — if the previous identity resolution was an error (e.g. wrong account,
+      // then the user signed in with the correct account), regenerate the session and
+      // clear any stale chat messages so the new session starts clean.
+      if (lastIdentityState === 'error') {
+        sessionId = generateSessionId();
+        messagesEl.innerHTML = '';
+      }
+      lastIdentityState = 'ok';
+
+      // Populate identity bar and show main content
       currentUser = identity;
       const initials = getInitials(identity.name);
       document.getElementById('id-bar-avatar').textContent = initials;
