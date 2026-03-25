@@ -18,7 +18,7 @@ const APPROVAL_TOKEN_TTL_DAYS  = 7;     // approval email links expire after 7 d
 const DASHBOARD_SESSION_TTL    = 21600; // dashboard session: 6 hours (seconds) — CacheService max is 21600
 const CHAT_SESSION_TTL         = 1800;  // chat session cache: 30 minutes (seconds)
 const MAX_CHAT_MESSAGES        = 30;    // max user messages per chat session
-const MAX_SUBMISSIONS_PER_HOUR = 20;    // global ticket submission rate limit per hour
+const MAX_SUBMISSIONS_PER_HOUR = 50;  // lower to 20 after testing
 const MAX_MESSAGE_LENGTH       = 1000;  // max characters accepted per user message
 
 const RECOMMENDATION_TYPES = [
@@ -941,28 +941,41 @@ function buildAndParaphraseDescription(session, labelPrefix) {
 
 /**
  * Formally paraphrases a raw IT request description into Philippine government document style.
- * Returns rawText unchanged on API error.
- * Used by submitFormTicket() where there is no conversation history to extract from.
+ * Also performs a topic relevance gate — clearly off-topic descriptions are rejected before
+ * they reach saveTicket(). Fails open on API error so tickets are never silently lost.
+ *
+ * @param {string} rawText       - Raw description to paraphrase.
+ * @param {string} [requestType] - 'publication', 'cctv', 'technical', or omit for IT issue/repair.
+ * @returns {{ offtopic: boolean, text?: string, reason?: string }}
+ *   offtopic: true  → { offtopic: true, reason: '...' }   — caller should reject the submission
+ *   offtopic: false → { offtopic: false, text: '...' }    — use text as the formal description
  */
-function paraphraseDescription(rawText) {
+function paraphraseDescription(rawText, requestType) {
+  // Fail open immediately — no text or no key means we can't check; let the ticket through
+  if (!rawText) return { offtopic: false, text: rawText };
   try {
-    if (!rawText) return rawText;
     const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-    if (!apiKey) return rawText;
+    if (!apiKey) return { offtopic: false, text: rawText };
+
+    const typeContext = requestType
+      ? 'This is a ' + requestType + ' request to the PSHS-ZRC IT Unit.'
+      : 'This is an IT issue/repair request to the PSHS-ZRC IT Unit.';
 
     const systemPrompt =
-      'You are a formal document editor for a Philippine government school (PSHS ZRC). ' +
-      'Rewrite the following IT problem or service request description in clear, formal ' +
-      'Filipino-English — the style used in Philippine government office documents. ' +
-      'Rules:\n' +
-      '- Keep all technical details and specifics exactly as stated\n' +
-      '- Do not add information not present in the input\n' +
-      '- Do not remove any detail\n' +
-      '- Begin with: "The requesting party reports that..." or "The unit/device..." ' +
-      '  or "A request has been made for..." depending on context\n' +
-      '- Maximum 3 sentences\n' +
-      '- Output ONLY the rewritten text, nothing else\n' +
-      'Input: ' + rawText;
+      typeContext + '\n\n' +
+      'Rewrite the following user description in formal Philippine government document style.\n' +
+      'Begin with "The requesting party reports that..." or "A request has been made for..." as appropriate.\n' +
+      'Use third person. Be concise. Maximum 3 sentences.\n' +
+      'Keep all technical details and specifics exactly as stated. Do not add or remove any detail.\n\n' +
+      'IMPORTANT RULES:\n' +
+      '1. If the description is CLEARLY unrelated to IT services, publication/design work,\n' +
+      '   CCTV requests, or technical assistance (e.g. it describes personal health issues,\n' +
+      '   food, personal matters, weather, or is random/nonsense text), respond with EXACTLY:\n' +
+      '   OFFTOPIC: [one sentence explaining why it is off-topic]\n' +
+      '   Do NOT paraphrase off-topic content.\n' +
+      '2. If the description is relevant, paraphrase it normally in 1-3 sentences.\n' +
+      '3. When in doubt, paraphrase — only reject CLEARLY unrelated content.\n\n' +
+      'Description:\n"""\n' + rawText + '\n"""';
 
     const payload = {
       contents: [{ role: 'user', parts: [{ text: systemPrompt }] }],
@@ -976,10 +989,17 @@ function paraphraseDescription(rawText) {
     });
     const text = JSON.parse(response.getContentText())
       ?.candidates?.[0]?.content?.parts?.[0]?.text;
-    return text ? text.trim() : rawText;
+
+    if (!text) return { offtopic: false, text: rawText }; // empty response — fail open
+
+    const result = text.trim();
+    if (result.startsWith('OFFTOPIC:')) {
+      return { offtopic: true, reason: result.replace('OFFTOPIC:', '').trim() };
+    }
+    return { offtopic: false, text: result };
   } catch (err) {
     console.error('paraphraseDescription error: ' + err);
-    return rawText;
+    return { offtopic: false, text: rawText }; // fail open — use raw text rather than blocking
   }
 }
 
@@ -1451,15 +1471,24 @@ function submitFormTicket(params) {
       return { error: 'too_short', message: 'Description must be at least 8 words. Please provide more detail.' };
     }
 
-    // 6. Build description with label prefix, then formally paraphrase
+    // 6. Build description with label prefix, run topic-relevance gate + formal paraphrase
     const labelMap = {
       publication: 'Publication/Design Request',
       cctv:        'CCTV Viewing Request',
       technical:   'Technical Assistance',
     };
-    const label          = labelMap[params.quickStartType] || params.quickStartType;
-    const rawDescription = label + ': ' + rawDesc;
-    const formalDesc     = paraphraseDescription(rawDescription);
+    const label            = labelMap[params.quickStartType] || params.quickStartType;
+    const rawDescription   = label + ': ' + rawDesc;
+    const paraphraseResult = paraphraseDescription(rawDescription, params.quickStartType);
+    if (paraphraseResult.offtopic) {
+      return {
+        error:   'offtopic',
+        message: 'Your description does not appear to be related to an IT service request. ' +
+                 'Please describe the specific IT issue, publication need, CCTV request, ' +
+                 'or technical assistance you require.',
+      };
+    }
+    const formalDesc = paraphraseResult.text;
 
     // 7. Save ticket — recType always 'Others, Repair' for all three form types
     const saved = saveTicket({

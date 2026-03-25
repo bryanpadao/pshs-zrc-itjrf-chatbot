@@ -58,15 +58,14 @@
 [Faculty / Staff browser]
         |
         | google.script.run.getUserIdentity()  ← on page load
-        | google.script.run.getTicketUpdates() ← after identity resolved (email param ignored; identity derived server-side)
+        | google.script.run.getMyTickets()    ← after identity resolved (email param ignored; identity derived server-side)
         | google.script.run.processChat({ message, sessionId, userIdentity })
         | google.script.run.submitFormTicket(params)  ← form-panel submissions (publication/cctv/technical)
         v
 [Index.html] --> [Code.gs server functions via google.script.run]
                         |
                         |-- getUserIdentity()    reads Google account email, looks up Employees sheet
-                        |-- getTicketUpdates()   returns recent status changes (email param ignored; uses Session.getActiveUser())
-                        |-- getMyTickets()       returns all tickets for this user (email param ignored; uses Session.getActiveUser())
+                        |-- getMyTickets()       drives ticket status strip on load (email param ignored; uses Session.getActiveUser())
                         |-- handleChat()         RAG + Gemini, detects %%FILE_TICKET%% signal
                         |-- handleFormStep()     collects description step only (identity pre-filled)
                         |-- handleCctvLetterCheck()  CCTV letter gate
@@ -403,15 +402,14 @@ Called after name confirmation (yes path) and after manual department entry. Alw
 ### Backend functions
 - **`getUserIdentity()`** — reads Google account email via `Session.getActiveUser()`; looks up Employees sheet col D; returns `{ email, name, position, department, departmentFull, supervisor, supervisorEmail }` or `{ error }` object
 - **`getDashboardUser()`** — returns `{ email, authorized }` for dashboard auth check; used by Dashboard on load
-- **`getTicketUpdates(email)`** — returns up to 5 recent ticket status updates, excluding `Pending Supervisor Approval`; the `email` parameter is ignored — identity is derived server-side from `Session.getActiveUser().getEmail()` to prevent one user querying another user's tickets
-- **`getMyTickets(email)`** — returns all tickets for the current user (col R), all statuses, sorted by IT JRF # descending; the `email` parameter is ignored — identity derived server-side (same security reason as above)
+- **`getMyTickets(email)`** — returns all tickets for the current user (col R), all statuses, sorted by IT JRF # descending; the `email` parameter is ignored — identity derived server-side from `Session.getActiveUser().getEmail()` to prevent one user querying another user's tickets. Also drives the ticket status strip on Index.html page load via `onMyTicketsFirstLoad()` — the function that performs cache-diffing and renders status-change bubbles.
 - **`hasEnoughContext(message)`** — lightweight Gemini call; returns bool — true if message has enough detail to file a ticket; false increments `session.strikeCount` (in chat flow); fails open (returns true) on API error
 - **`buildDescriptionFromHistory(session)`** — Gemini call to extract a comprehensive description from the full chat history; falls back to `session.formData.description` on error
-- **`paraphraseDescription(rawText)`** — Gemini call to formally paraphrase description in Philippine government document style; returns rawText unchanged on error
+- **`paraphraseDescription(rawText, requestType)`** — Gemini call that performs a topic-relevance gate **and** formal paraphrase in one call. `requestType` is optional (`'publication'`, `'cctv'`, `'technical'`, or omit for IT issue/repair); it gives Gemini the context needed to judge relevance. Returns `{ offtopic: false, text: '...' }` on success or `{ offtopic: true, reason: '...' }` when the description is clearly unrelated to IT services. Fails open on any API error — returns `{ offtopic: false, text: rawText }` so a Gemini failure never silently blocks a ticket. Used only by `submitFormTicket()`; the chat flow uses the separate `buildAndParaphraseDescription()` function instead.
 - **`handleCctvLetterCheck(message, session)`** — handles `cctv_letter_check` state; yes = proceed to description; no = explain requirement + end conversation. Yes/no matching uses `containsWord()` (word-boundary regex); negative phrases (e.g. "not yet", "wala pa") are checked before positive ones to prevent "ok" from matching "not ok".
 - **`searchKnowledgeBase(query)`** — keyword scoring against KnowledgeBase sheet, returns top 3 or null
 - **`callGemini(message, history, kbContext)`** — Gemini API call with system prompt + KB context + history
-- **`submitFormTicket(params)`** — handles form-panel submissions for `publication`/`cctv`/`technical`; `params.userIdentity` is intentionally ignored — identity is re-verified server-side via `getUserIdentity()` to prevent spoofing; validates rate limits + CCTV letter flag; paraphrases description; calls `saveTicket()`; returns `{ jrfNo, rawDesc, name, departmentFull, supervisor }` on success or `{ error, message }` on failure. Does NOT call `hasEnoughContext()` — its IT-repair prompt incorrectly rejects design/CCTV/technical requests; the 8-word minimum is sufficient for forms.
+- **`submitFormTicket(params)`** — handles form-panel submissions for `publication`/`cctv`/`technical`; `params.userIdentity` is intentionally ignored — identity is re-verified server-side via `getUserIdentity()` to prevent spoofing; validates rate limits + CCTV letter flag; calls `paraphraseDescription(rawDescription, params.quickStartType)` for topic-relevance check + formal paraphrase — returns `{ error: 'offtopic', message: '...' }` if Gemini flags the description as unrelated to IT services; calls `saveTicket()` on success; returns `{ jrfNo, rawDesc, name, departmentFull, supervisor }` on success or `{ error, message }` on failure. Does NOT call `hasEnoughContext()` — its IT-repair prompt incorrectly rejects design/CCTV/technical requests; the 8-word minimum plus the `paraphraseDescription()` relevance gate is the validation stack for forms.
 - **`saveTicket(data)`** — calls `checkGlobalRateLimit()` + per-user rate limit (3/day); IT JRF # generation and `appendRow()` are wrapped in `LockService.getScriptLock()` to prevent duplicate JRF numbers under concurrent submissions; applies `sanitizeCell()` to all user-supplied columns before `appendRow()`; sends supervisor approval email
 - **`appendHistory(history, userText, modelText)`** — rolling 20-message history (max 10 turns)
 - **`isGibberish(text)`** — detects keyboard mashing; used by `handleChat()` and `handleFormStep()` (both increment `session.strikeCount`); `handleFormStep()` only checks on non-description steps
@@ -555,10 +553,15 @@ Messaging-app style (iMessage/WhatsApp inspired). Primary color: `#1a3c6e` (PSHS
 - **On success**: hides form panel, appends success bubble to chat, calls `lockChat()` (shows "Start a New Conversation")
 
 ### Ticket status updates on load
-- After `getUserIdentity()` resolves (user found in Employees sheet), `getTicketUpdates(email)` is called
-- Uses `localStorage` key `pshs_ticket_cache_[email]` to store `{ jrfNo: status }` map
-- Only shows update bubbles for tickets whose status changed since last cached value; cache is updated after displaying updates
-- Status lines shown per ticket:
+- After `getUserIdentity()` resolves, `onMyTicketsFirstLoad()` is called.
+- Calls `getMyTickets()` server-side to fetch all tickets for this user.
+- Reads `localStorage` key `pshs_ticket_cache_[email]` (try/catch for quota errors) — stores `{ jrfNo: status }` map from last visit.
+- Compares current statuses against cached map to find changed tickets.
+- Excludes `Pending Supervisor Approval` from change detection — users are not notified when their ticket first enters the queue.
+- Renders up to **2** status-change chat bubbles for changed tickets.
+- If more than 2 tickets changed: adds a clickable **"+ N more"** bot bubble that opens the My Tickets overlay on click.
+- Writes the updated `{ jrfNo: status }` map back to localStorage immediately after displaying — prevents re-showing the same bubbles on same-session refresh.
+- Status text per status value:
   - `Pending IT Assessment` → "⏳ Waiting for IT staff assessment"
   - `Pending Director Approval` → "⏳ Waiting for Campus Director approval"
   - `In Progress` → "🔧 Being worked on by [assignedStaff] — target: [targetDate]"
@@ -738,7 +741,10 @@ ALLOWED_DOMAIN   → (optional) e.g. zrc.pshs.edu.ph — restricts chatbot to th
 | Description missing quick-start context label | Fixed: `session.quickStartLabel` is prepended to description (e.g. `"Technical Assistance: ..."`) so IT staff see the request type clearly |
 | Users entering gibberish or low-context messages | Both handlers share `session.strikeCount` — incremented by `isGibberish()` in either handler and by `hasEnoughContext()` returning false in `handleChat()`. 3 strikes ends conversation with joke + `submitted: true` |
 | "Ask a Question" button removed from grid | Removed from the 2×2 quick-start grid. The `question` key is still handled in `handleQuickReply()` client-side JS but has no corresponding button in the UI |
-| `getTicketUpdates()` shows update every session if status unchanged | `localStorage` cache `pshs_ticket_cache_[email]` stores last-seen statuses; only shows strip when status changed since last visit |
+| Status strip showed all tickets every visit with no change detection | Fixed: `onMyTicketsFirstLoad()` implements `pshs_ticket_cache_[email]` localStorage cache-diffing — only status-changed tickets generate new bubbles. Cache updated immediately after display. |
+| `Pending Supervisor Approval` was shown in status strip | Fixed: excluded from change detection in `onMyTicketsFirstLoad()` — users are not notified when their ticket first enters the queue. |
+| No overflow handling for multiple status changes | Fixed: if more than 2 tickets changed status, a "+ N more" bot bubble is shown that opens the My Tickets overlay on click. |
+| `getTicketUpdates()` confirmed dead code | Function exists in Code.gs but is never called from Index.html. Status strip is driven entirely by `getMyTickets()` via `onMyTicketsFirstLoad()`. To be removed in next cleanup pass. |
 | My Tickets panel accessible only via strip toggle | No dedicated "My Tickets" button in the UI — only reachable via the "+ N more" link in the ticket status strip. Success message still references "📋 My Tickets" but that is just informational text |
 | Per-user rate limit resets at midnight PHT, not 24h from first submission | TTL calculated as seconds remaining until midnight PHT (UTC+8) — intentional, matches a working day reset |
 | CCTV letter checkbox can be bypassed client-side | `submitFormTicket()` also validates `cctvLetterConfirmed` server-side — belt-and-suspenders |
@@ -747,7 +753,7 @@ ALLOWED_DOMAIN   → (optional) e.g. zrc.pshs.edu.ph — restricts chatbot to th
 | Formula injection via user-supplied sheet values | `sanitizeCell()` prepends a single-quote to values starting with `=`, `+`, `-`, `@` before `appendRow()` in `saveTicket()` — prevents Sheets from evaluating them as formulas |
 | Duplicate IT JRF numbers under concurrent submissions | `saveTicket()` wraps JRF# generation and `appendRow()` in `LockService.getScriptLock()` — only one request at a time can read the last row and write the next row |
 | Race condition in global rate limit | `checkGlobalRateLimit()` wraps the read-modify-write of the timestamp array in `LockService.getScriptLock()` — two simultaneous submissions can no longer both pass a single remaining slot |
-| `getMyTickets`/`getTicketUpdates` email param ignored | The `email` parameter accepted by both functions is intentionally ignored; identity is derived server-side from `Session.getActiveUser()` to prevent a user from querying another user's tickets by passing a different email |
+| `getMyTickets` email param ignored | The `email` parameter accepted by `getMyTickets()` is intentionally ignored; identity is derived server-side from `Session.getActiveUser()` to prevent a user from querying another user's tickets by passing a different email |
 | `handleApproval()` consumed token before ticket validation | Fixed: ticket row is now looked up and validated before the token is marked Used — a failed ticket lookup no longer permanently invalidates the approval token |
 | Per-user rate limit TTL could be 0 at midnight PHT | Fixed: TTL uses `Math.max(60, ...)` — minimum 60 seconds ensures `CacheService.put()` never receives a zero or negative value |
 | `handleCctvLetterCheck()` partial-word false matches on yes/no | Fixed: yes/no detection uses `containsWord()` (word-boundary regex) and checks negative phrases before positive — prevents `'ok'` from matching `'not ok'` |
@@ -758,6 +764,7 @@ ALLOWED_DOMAIN   → (optional) e.g. zrc.pshs.edu.ph — restricts chatbot to th
 | Firefox approval links fail (Google Workspace auth middleware) | Known unfixable Firefox+Google Workspace incompatibility (Mozilla bug #1593321). Workarounds: (1) `.setXFrameOptionsMode(ALLOWALL)` on all HtmlService returns, (2) `#fallback-msg` div in `showApprovalConfirmPage()` shows copy-paste URLs only after a `.confirm-btn` click + 8-second delay with no navigation (`beforeunload` cancels the timer — so the fallback never appears during a normal slow page load), (3) Firefox note in approval email body advising to open in Chrome |
 | PDF JRF# showing as number (e.g. `1`) instead of string (`2026-03-001`) | Sheets `getValues()` coerces zero-padded strings to numbers. Fixed: `writeCell('O6', String(ticket.jrfNumber))` |
 | `writeTextBlock()` using A1-string concatenation and `mergeAcross()` causing row expansion | Rewritten: uses numeric `getRange(row, col, 1, numCols)`, `merge()` instead of `mergeAcross()`, strict order: `breakApart()` → `merge()` → `setValue()` → `setWrapStrategy(CLIP)` → `setRowHeight(21)`. Call sites updated to new signature `(startRow, endRow, startCol, endCol, value)` |
+| Form panels accept any description including off-topic content (e.g. stomach pain) | Fixed: `paraphraseDescription()` now performs a topic-relevance gate in the same Gemini call. Returns `{ offtopic: true }` for clearly unrelated content; `submitFormTicket()` returns `{ error: 'offtopic', message: '...' }` which Index.html displays inline in the form panel. Bias is lenient — only clearly unrelated content is rejected. Fails open on API error. |
 
 ---
 
