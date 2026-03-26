@@ -261,6 +261,8 @@
     .btn-assess   { background: rgba(42,95,170,0.2);   border: 1px solid rgba(42,95,170,0.4);   color: #7ab0f0; }
     .btn-complete { background: rgba(29,158,117,0.15); border: 1px solid rgba(29,158,117,0.35); color: #4dd4a8; }
     .btn-pdf      { background: rgba(201,168,76,0.15); border: 1px solid rgba(201,168,76,0.35); color: var(--gold); }
+    .btn-kb       { background: rgba(15,111,75,0.12);  border: 1px solid rgba(15,111,75,0.25);  color: #1a7a4a; }
+    .btn-kb:hover { background: rgba(15,111,75,0.22); }
     .btn-awaiting { background: transparent; border: 1px solid var(--border); color: var(--text-muted); cursor: default; pointer-events: none; white-space: nowrap; display: inline-block; max-width: 140px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
     .actions-cell { white-space: nowrap; min-width: 180px; }
     .status-cell  { white-space: nowrap; min-width: 160px; }
@@ -979,6 +981,50 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="kb-modal-overlay" style="display:none;">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-header">
+      <span class="modal-title">Add to KnowledgeBase</span>
+      <button class="modal-close" onclick="closeKbModal()">&#10005;</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-ticket-summary" id="kb-ticket-summary"></div>
+      <p style="font-size:12px;color:var(--text-muted);margin:0 0 14px;">
+        Gemini generated this entry from the ticket. Review and edit before saving.
+      </p>
+      <div class="form-group">
+        <label>Issue Title</label>
+        <input type="text" id="kb-issue" placeholder="Short title for this issue">
+      </div>
+      <div class="form-group">
+        <label>Solution</label>
+        <textarea id="kb-solution" rows="4" placeholder="Step-by-step solution..."></textarea>
+      </div>
+      <div class="form-group">
+        <label>Category</label>
+        <select id="kb-category">
+          <option>Network</option>
+          <option>Hardware</option>
+          <option selected>Software</option>
+          <option>Account</option>
+          <option>Maintenance</option>
+          <option>External</option>
+          <option>Technical Assistance</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Keywords (comma-separated)</label>
+        <input type="text" id="kb-keywords" placeholder="e.g. word, laggy, slow, unresponsive">
+      </div>
+      <div class="modal-error" id="kb-error" style="display:none;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeKbModal()">Cancel</button>
+      <button class="btn-primary" id="kb-save-btn" onclick="saveKbEntry()">Save to KnowledgeBase</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1231,7 +1277,9 @@
           actionHtml = '<button class="btn-action btn-complete" onclick="openCompleteModal(\'' + esc(t.jrfNo) + '\')">&#10003; Complete</button>';
           break;
         case 'Completed':
-          actionHtml = '<button class="btn-action btn-pdf" onclick="downloadPdf(\'' + esc(t.jrfNo) + '\')">&#8595; PDF</button>';
+          actionHtml =
+            '<button class="btn-action btn-pdf" onclick="downloadPdf(\'' + esc(t.jrfNo) + '\')">&#8595; PDF</button>' +
+            ' <button class="btn-action btn-kb" onclick="openKbModal(\'' + esc(t.jrfNo) + '\')" title="Add to KnowledgeBase">+ KB</button>';
           break;
         default:
           actionHtml = '';
@@ -1592,6 +1640,94 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  // ── KnowledgeBase Modal ──────────────────────────────────────────────────────
+
+  function openKbModal(jrfNo) {
+    document.getElementById('kb-modal-overlay').style.display = 'flex';
+    // Show JRF# immediately while Gemini generates the draft
+    document.getElementById('kb-ticket-summary').textContent = 'IT JRF #' + jrfNo;
+    document.getElementById('kb-issue').value    = '';
+    document.getElementById('kb-solution').value = '';
+    document.getElementById('kb-keywords').value = '';
+    document.getElementById('kb-error').style.display = 'none';
+    const btn = document.getElementById('kb-save-btn');
+    btn.disabled = true;
+    btn.textContent = '\u23F3 Generating\u2026';
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        btn.disabled = false;
+        btn.textContent = 'Save to KnowledgeBase';
+        if (result.error) {
+          document.getElementById('kb-error').textContent = result.message;
+          document.getElementById('kb-error').style.display = 'block';
+          return;
+        }
+        document.getElementById('kb-ticket-summary').textContent =
+          'IT JRF #' + result.jrfNo + ' \u2014 review and edit before saving';
+        document.getElementById('kb-issue').value    = result.issue;
+        document.getElementById('kb-solution').value = result.solution;
+        document.getElementById('kb-keywords').value = result.keywords;
+        // Select the matching category option
+        const sel = document.getElementById('kb-category');
+        for (let i = 0; i < sel.options.length; i++) {
+          if (sel.options[i].value === result.category) {
+            sel.selectedIndex = i;
+            break;
+          }
+        }
+      })
+      .withFailureHandler(function(err) {
+        btn.disabled = false;
+        btn.textContent = 'Save to KnowledgeBase';
+        document.getElementById('kb-error').textContent = 'Error: ' + (err.message || err);
+        document.getElementById('kb-error').style.display = 'block';
+      })
+      .generateKbEntry(jrfNo);
+  }
+
+  function closeKbModal() {
+    document.getElementById('kb-modal-overlay').style.display = 'none';
+  }
+
+  function saveKbEntry() {
+    const issue    = document.getElementById('kb-issue').value.trim();
+    const solution = document.getElementById('kb-solution').value.trim();
+    const category = document.getElementById('kb-category').value;
+    const keywords = document.getElementById('kb-keywords').value.trim();
+
+    if (!issue || !solution) {
+      document.getElementById('kb-error').textContent = 'Issue and Solution are required.';
+      document.getElementById('kb-error').style.display = 'block';
+      return;
+    }
+
+    const btn = document.getElementById('kb-save-btn');
+    btn.disabled = true;
+    btn.textContent = '\u23F3 Saving\u2026';
+    document.getElementById('kb-error').style.display = 'none';
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        btn.disabled = false;
+        btn.textContent = 'Save to KnowledgeBase';
+        if (result.error) {
+          document.getElementById('kb-error').textContent = result.message;
+          document.getElementById('kb-error').style.display = 'block';
+          return;
+        }
+        closeKbModal();
+        showToast('Added to KnowledgeBase successfully.');
+      })
+      .withFailureHandler(function(err) {
+        btn.disabled = false;
+        btn.textContent = 'Save to KnowledgeBase';
+        document.getElementById('kb-error').textContent = 'Error: ' + (err.message || err);
+        document.getElementById('kb-error').style.display = 'block';
+      })
+      .saveKbEntry(issue, solution, category, keywords);
   }
 
   // ── Edit Modal ───────────────────────────────────────────────────────────────

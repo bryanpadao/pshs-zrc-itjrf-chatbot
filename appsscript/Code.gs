@@ -343,6 +343,7 @@ function handleChat(message, session) {
     'I think your cat may have walked across the keyboard one too many times. 🐱 Let\'s start fresh — begin a new conversation when you\'re ready!',
   ];
   if (isGibberish(message)) {
+    console.error('handleChat: isGibberish rejected:', message.slice(0, 50));
     session.strikeCount = (session.strikeCount || 0) + 1;
     if (session.strikeCount >= 3) {
       const joke = NONSENSE_JOKES[Math.floor(Math.random() * NONSENSE_JOKES.length)];
@@ -389,6 +390,7 @@ function handleChat(message, session) {
       // Guard: reject filing if there is no real IT context in the conversation.
       // Any mix of gibberish + unrelated inputs counts toward the shared 3-strike limit.
       if (!hasEnoughContext(rawDesc)) {
+        console.error('handleChat: hasEnoughContext rejected:', rawDesc.slice(0, 50));
         session.strikeCount = (session.strikeCount || 0) + 1;
         if (session.strikeCount >= 3) {
           const joke = NONSENSE_JOKES[Math.floor(Math.random() * NONSENSE_JOKES.length)];
@@ -844,14 +846,23 @@ function hasEnoughContext(message) {
     const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
     if (!apiKey) return true;
 
+    // Lenient prompt: any mention of an app, device, symptom, or connectivity issue
+    // is sufficient. Only rejects genuinely unrelated content, gibberish, or
+    // single-word messages with zero IT context.
     const systemPrompt =
-      'You are checking if an IT help desk request has enough detail to file an official form. ' +
-      'Reply ONLY with "yes" or "no". ' +
-      'Answer "yes" if the message contains: what the problem/request is AND at least one specific detail ' +
-      '(device/system affected, event/occasion, what happened, when it started, what was already tried). ' +
-      'Answer "no" if too vague, under 8 words, or no context — e.g. "broken", "not working", ' +
-      '"need help", "poster", "CCTV", "assistance". ' +
-      'Message: ' + message;
+      'You are evaluating whether a message has enough IT context to file a\n' +
+      'support ticket at a school IT unit.\n\n' +
+      'Answer YES if the message contains ANY of:\n' +
+      '- An application, software, or device name\n' +
+      '- A specific symptom or behavior (slow, frozen, crash, error, no signal)\n' +
+      '- A network or connectivity issue\n' +
+      '- A Filipino or Bisaya IT phrase\n\n' +
+      'Answer NO only if the message is:\n' +
+      '- Completely unrelated to IT (personal matters, health, food, random text)\n' +
+      '- Pure gibberish or keyboard mashing\n' +
+      '- A single word with no context (e.g. just "help" or "problem")\n\n' +
+      'Message: "' + message + '"\n\n' +
+      'Reply with only YES or NO.';
 
     const payload = {
       contents: [{ role: 'user', parts: [{ text: systemPrompt }] }],
@@ -957,6 +968,14 @@ function buildAndParaphraseDescription(session, labelPrefix) {
 function paraphraseDescription(rawText, requestType) {
   // Fail open immediately — no text or no key means we can't check; let the ticket through
   if (!rawText) return { offtopic: false, text: rawText };
+
+  // The offtopic relevance gate is only for form-panel submissions (publication/cctv/technical).
+  // The chat flow (buildAndParaphraseDescription / handleChat) already has isGibberish() and
+  // hasEnoughContext() as quality gates — adding a third gate here over-filters legitimate
+  // IT complaints like "Microsoft Word is laggy and becomes unresponsive".
+  // requestType is always provided by submitFormTicket(); it is undefined/null from the chat flow.
+  const runOfftopicCheck = !!requestType;
+
   try {
     const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
     if (!apiKey) return { offtopic: false, text: rawText };
@@ -965,20 +984,25 @@ function paraphraseDescription(rawText, requestType) {
       ? 'This is a ' + requestType + ' request to the PSHS-ZRC IT Unit.'
       : 'This is an IT issue/repair request to the PSHS-ZRC IT Unit.';
 
+    // Build the offtopic-check rules only when called from the form panel.
+    const offtopicRules = runOfftopicCheck
+      ? 'IMPORTANT RULES:\n' +
+        '1. If the description is CLEARLY unrelated to IT services, publication/design work,\n' +
+        '   CCTV requests, or technical assistance (e.g. it describes personal health issues,\n' +
+        '   food, personal matters, weather, or is random/nonsense text), respond with EXACTLY:\n' +
+        '   OFFTOPIC: [one sentence explaining why it is off-topic]\n' +
+        '   Do NOT paraphrase off-topic content.\n' +
+        '2. If the description is relevant, paraphrase it normally in 1-3 sentences.\n' +
+        '3. When in doubt, paraphrase — only reject CLEARLY unrelated content.\n\n'
+      : '';
+
     const systemPrompt =
       typeContext + '\n\n' +
       'Rewrite the following user description in formal Philippine government document style.\n' +
       'Begin with "The requesting party reports that..." or "A request has been made for..." as appropriate.\n' +
       'Use third person. Be concise. Maximum 3 sentences.\n' +
       'Keep all technical details and specifics exactly as stated. Do not add or remove any detail.\n\n' +
-      'IMPORTANT RULES:\n' +
-      '1. If the description is CLEARLY unrelated to IT services, publication/design work,\n' +
-      '   CCTV requests, or technical assistance (e.g. it describes personal health issues,\n' +
-      '   food, personal matters, weather, or is random/nonsense text), respond with EXACTLY:\n' +
-      '   OFFTOPIC: [one sentence explaining why it is off-topic]\n' +
-      '   Do NOT paraphrase off-topic content.\n' +
-      '2. If the description is relevant, paraphrase it normally in 1-3 sentences.\n' +
-      '3. When in doubt, paraphrase — only reject CLEARLY unrelated content.\n\n' +
+      offtopicRules +
       'Description:\n"""\n' + rawText + '\n"""';
 
     const payload = {
@@ -997,7 +1021,12 @@ function paraphraseDescription(rawText, requestType) {
     if (!text) return { offtopic: false, text: rawText }; // empty response — fail open
 
     const result = text.trim();
-    if (result.startsWith('OFFTOPIC:')) {
+    // Only evaluate the OFFTOPIC prefix when the check was actually requested
+    // (i.e. called from submitFormTicket with a requestType).
+    // The chat flow never includes the OFFTOPIC instruction in the prompt, so
+    // this branch is unreachable from the chat path — but we guard it explicitly
+    // to be safe against any unexpected Gemini output.
+    if (runOfftopicCheck && result.startsWith('OFFTOPIC:')) {
       return { offtopic: true, reason: result.replace('OFFTOPIC:', '').trim() };
     }
     return { offtopic: false, text: result };
@@ -2671,6 +2700,119 @@ function assignStaff(token, jrfNo, staffName) {
     }
   }
   return false;
+}
+
+/**
+ * Generates a KnowledgeBase entry draft from a Completed ticket using Gemini.
+ * Called from the Dashboard "+ KB" button on Completed rows.
+ * Returns { error, issue, solution, category, keywords, jrfNo } on success
+ * or { error: true, message } on failure.
+ */
+function generateKbEntry(jrfNo) {
+  _requireDashboardAuth();
+
+  const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(ITJRF_SHEET_NAME);
+  const rows  = sheet.getDataRange().getValues();
+
+  // Find the ticket row by IT JRF #
+  let ticketRow = null;
+  for (let i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === String(jrfNo)) {
+      ticketRow = rows[i];
+      break;
+    }
+  }
+  if (!ticketRow) return { error: true, message: 'Ticket not found.' };
+  if (ticketRow[7] !== 'Completed') {
+    return { error: true, message: 'Only Completed tickets can be added to the KnowledgeBase.' };
+  }
+
+  const problem     = ticketRow[5]  || ''; // col F — Problem Description
+  const actionTaken = ticketRow[11] || ''; // col L — Action Taken
+  const recType     = ticketRow[6]  || ''; // col G — Recommendation Type
+
+  if (!problem || !actionTaken) {
+    return { error: true, message: 'Problem or Action Taken is empty — cannot generate entry.' };
+  }
+
+  const prompt =
+    'You are writing a KnowledgeBase entry for a school IT unit.\n\n' +
+    'Given this resolved IT ticket:\n' +
+    'Problem: ' + problem + '\n' +
+    'Solution/Action Taken: ' + actionTaken + '\n' +
+    'Recommendation Type: ' + recType + '\n\n' +
+    'Write a KnowledgeBase entry as JSON with exactly these fields:\n' +
+    '{\n' +
+    '  "issue": "short title (5-10 words)",\n' +
+    '  "solution": "step-by-step solution (numbered, 2-5 steps)",\n' +
+    '  "category": "one of: Network / Hardware / Software / Account / Maintenance / External / Technical Assistance",\n' +
+    '  "keywords": "comma-separated trigger words (5-10 words)"\n' +
+    '}\n\n' +
+    'Reply with only the JSON object. No markdown, no explanation.';
+
+  try {
+    const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+    if (!apiKey) return { error: true, message: 'Gemini API key not configured.' };
+
+    // Single-turn Gemini call — same pattern as paraphraseDescription()
+    const payload = {
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.3, maxOutputTokens: 512 },
+    };
+    const response = UrlFetchApp.fetch(GEMINI_ENDPOINT + '?key=' + apiKey, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    });
+    const raw = JSON.parse(response.getContentText())
+      ?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!raw) return { error: true, message: 'Gemini returned no content. Try again.' };
+
+    const parsed = extractJson(raw);
+    if (!parsed) return { error: true, message: 'Gemini could not generate a KB entry. Try again.' };
+
+    return {
+      error:    false,
+      issue:    parsed.issue    || '',
+      solution: parsed.solution || '',
+      category: parsed.category || 'Software',
+      keywords: parsed.keywords || '',
+      jrfNo:    jrfNo
+    };
+  } catch (e) {
+    console.error('generateKbEntry error:', e);
+    return { error: true, message: 'Gemini error: ' + e.message };
+  }
+}
+
+/**
+ * Appends a new row to the KnowledgeBase sheet with the provided entry fields.
+ * Called from the Dashboard KB modal after IT staff reviews the Gemini draft.
+ * Returns { error: false, message } on success or { error: true, message } on failure.
+ */
+function saveKbEntry(issue, solution, category, keywords) {
+  _requireDashboardAuth();
+
+  if (!issue || !solution) {
+    return { error: true, message: 'Issue and Solution are required.' };
+  }
+
+  const ss      = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const kbSheet = ss.getSheetByName(KB_SHEET_NAME);
+  if (!kbSheet) return { error: true, message: 'KnowledgeBase sheet not found.' };
+
+  // Append one row: Issue | Solution | Category | Keywords (cols A–D)
+  kbSheet.appendRow([
+    issue.trim(),
+    solution.trim(),
+    (category || 'Software').trim(),
+    (keywords || '').trim()
+  ]);
+
+  return { error: false, message: 'Added to KnowledgeBase successfully.' };
 }
 
 /**
